@@ -4,7 +4,7 @@ This directory contains translations of the textbook into other languages.
 
 ## Structure
 
-Each language has its own directory named by [ISO 639-1 code](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes):
+Each language has its own directory named by language code:
 
 ```
 translations/
@@ -29,7 +29,7 @@ translations/
 
 | Language | Status | Chapters Done | Maintainer |
 |----------|--------|---------------|------------|
-| Russian  | Planned | 0/17 | — |
+| Russian  | Planned | 17/17 | pyshka501@gmail.com |
 | Chinese  | Planned | 0/17 | — |
 | Spanish  | Planned | 0/17 | — |
 | German   | Planned | 0/17 | — |
