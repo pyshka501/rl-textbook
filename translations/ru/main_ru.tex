@@ -1,0 +1,248 @@
+\documentclass[oneside,openany]{book}
+
+% ============================================================
+%  METADATA
+% ============================================================
+\title{Обучение с подкреплением}
+\newcommand{\booksubtitle}{От бандитов до RLHF}
+\newcommand{\booklicense}{Creative Commons Zero 1.0 Universal}
+
+\author{На основе лекций К.\,К.~Пчелина}
+\newcommand{\authorsubtitle}{Москва, Россия}
+
+\makeatletter
+\newcommand{\booktitle}{\@title}
+\newcommand{\bookauthor}{\@author}
+\makeatother
+
+% ============================================================
+%  PACKAGES — CYRILLIC SUPPORT
+% ============================================================
+\usepackage[utf8]{inputenc}
+\usepackage[T2A]{fontenc}          % T2A for Cyrillic
+\usepackage{fix-cm}
+\usepackage{lmodern}
+\usepackage[english,russian]{babel} % Russian as main, English for math terms
+
+% Page geometry
+\usepackage[bindingoffset=0in,
+            left=0.75in, right=0.75in,
+            top=.8125in, bottom=.9375in,
+            paperwidth=7in, paperheight=10in]{geometry}
+
+% Mathematics
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{mathtools}
+\usepackage{bbm}
+\usepackage{bm}
+
+% Graphics & Figures
+\usepackage{tikz}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{subcaption}
+\usetikzlibrary{positioning,arrows,arrows.meta,shapes.geometric,calc,fit,decorations.pathreplacing,patterns}
+
+% Tables
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+
+% Algorithms
+\usepackage[ruled,vlined,linesnumbered]{algorithm2e}
+% Russian captions for algorithm2e
+\SetKwInput{KwData}{Вход}
+\SetKwInput{KwResult}{Выход}
+\SetKwComment{Comment}{// }{}
+\SetAlgorithmName{Алгоритм}{Алгоритм}{Список алгоритмов}
+
+% Lists
+\usepackage{enumitem}
+
+% Colors & Hyperlinks
+\usepackage{xcolor}
+\usepackage[colorlinks=true,
+            linkcolor=blue!60!black,
+            citecolor=green!50!black,
+            urlcolor=blue!70!black]{hyperref}
+
+% Index
+\usepackage{makeidx}
+\makeindex
+
+% Bibliography
+\usepackage[numbers,sort&compress]{natbib}
+
+% ToC depth
+\setcounter{tocdepth}{2}
+
+% Misc
+\usepackage{microtype}
+\usepackage{pifont}
+\newcommand{\xmark}{\ding{55}}
+\newcommand{\cmark}{\ding{51}}
+\emergencystretch=1.5em
+
+% ============================================================
+%  THEOREM ENVIRONMENTS (Russian names)
+% ============================================================
+\theoremstyle{definition}
+\newtheorem{definition}{Определение}[chapter]
+\newtheorem{example}{Пример}[chapter]
+\newtheorem{exercise}{Упражнение}[chapter]
+
+\theoremstyle{plain}
+\newtheorem{theorem}{Теорема}[chapter]
+\newtheorem{lemma}[theorem]{Лемма}
+\newtheorem{proposition}[theorem]{Утверждение}
+\newtheorem{corollary}[theorem]{Следствие}
+
+\theoremstyle{remark}
+\newtheorem{remark}{Замечание}[chapter]
+
+% Rename proof environment
+\renewcommand{\proofname}{Доказательство}
+
+% ============================================================
+%  CUSTOM COMMANDS (same as English version)
+% ============================================================
+\DeclareMathOperator{\E}{\mathbb{E}}
+\DeclareMathOperator{\Var}{Var}
+\DeclareMathOperator{\Cov}{Cov}
+\providecommand{\Prob}{}\renewcommand{\Prob}{\mathbb{P}}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\Z}{\mathbb{Z}}
+
+\newcommand{\cA}{\mathcal{A}}
+\newcommand{\cS}{\mathcal{S}}
+\newcommand{\cR}{\mathcal{R}}
+\newcommand{\cT}{\mathcal{T}}
+\newcommand{\cN}{\mathcal{N}}
+\newcommand{\cP}{\mathcal{P}}
+\newcommand{\cM}{\mathcal{M}}
+\newcommand{\cB}{\mathcal{B}}
+\newcommand{\concat}{\mathbin{\|}}
+\newcommand{\cV}{\mathcal{V}}
+\newcommand{\cD}{\mathcal{D}}
+\newcommand{\cF}{\mathcal{F}}
+\newcommand{\cL}{\mathcal{L}}
+
+\newcommand{\ind}{\mathbbm{1}}
+
+\DeclareMathOperator*{\argmax}{argmax}
+\DeclareMathOperator*{\argmin}{argmin}
+
+\newcommand{\KL}[2]{D_{\mathrm{KL}}\!\left(#1\;\|\;#2\right)}
+
+% ============================================================
+%  DOCUMENT
+% ============================================================
+\begin{document}
+\frontmatter
+
+% ---- Title Page ----
+\newgeometry{top=1.75in,bottom=.5in}
+\begin{titlepage}
+\begin{flushleft}
+
+\textbf{\fontsize{44}{50}\selectfont Обучение с\\подкреплением\\}
+
+\par\noindent\rule{\textwidth}{4pt}\\
+
+\begin{tikzpicture}
+\shade[bottom color=lightgray,top color=white]
+    (0,0) rectangle (\textwidth, 1.5)
+    node[midway] {\textbf{\large \textit{\booksubtitle}}};
+\end{tikzpicture}
+
+\begin{flushright}
+\Large Первое издание
+\end{flushright}
+
+\vspace{\fill}
+
+\textbf{\large \bookauthor}\\[3.5pt]
+\textbf{\large \textit{\authorsubtitle}}
+
+\vspace{\fill}
+
+\begin{center}
+\includegraphics{../../book/booksvg.pdf}
+\end{center}
+
+\end{flushleft}
+\end{titlepage}
+\restoregeometry
+
+% Colophon
+\thispagestyle{empty}
+\begin{flushleft}
+\vspace*{\fill}
+Книга свёрстана с помощью \LaTeX{}.\\
+\vspace{\fill}
+Copyright \textcopyright{} \the\year{}  \bookauthor\\
+Лицензия: \booklicense
+\end{flushleft}
+
+\addtocounter{page}{2}
+
+% Preface
+\input{frontmatter/preface_ru}
+
+% Table of Contents
+\tableofcontents
+
+% Notation
+\input{frontmatter/notation_ru}
+
+% ============================================================
+\mainmatter
+
+% --- Часть I: Основы ---
+\part{Основы}
+\include{chapters/ch01_ru}
+\include{chapters/ch02_ru}
+\include{chapters/ch03_ru}
+\include{chapters/ch04_ru}
+\include{chapters/ch05_ru}
+\include{chapters/ch06_ru}
+
+% --- Часть II: Аппроксимация функций и глубокое RL ---
+\part{Аппроксимация функций и глубокое RL}
+\include{chapters/ch07_ru}
+\include{chapters/ch08_ru}
+\include{chapters/ch09_ru}
+
+% --- Часть III: RL для языковых моделей ---
+\part{RL для языковых моделей}
+\include{chapters/ch10_ru}
+\include{chapters/ch11_ru}
+\include{chapters/ch12_ru}
+\include{chapters/ch13_ru}
+\include{chapters/ch14_ru}
+
+% --- Часть IV: Передний край ---
+\part{Передний край}
+\include{chapters/ch15_ru}
+\include{chapters/ch16_ru}
+\include{chapters/ch17_ru}
+
+% ============================================================
+\backmatter
+
+% Appendices
+\appendix
+\include{backmatter/appendix_math_ru}
+
+% Afterword
+\input{backmatter/afterword_ru}
+
+% Index
+\addcontentsline{toc}{chapter}{Предметный указатель}
+\printindex
+
+\end{document}
