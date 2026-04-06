@@ -1,0 +1,878 @@
+\chapter[MDPs and the Bellman Equation]{Markov Decision Processes and the Bellman Equation}
+\label{ch:mdp}
+
+\begin{quote}
+\itshape
+The theory of dynamic programming rests on a single observation: the future is independent of the past, given the present.
+\end{quote}
+
+\bigskip
+
+In Chapter~\ref{ch:bandits} we studied the multi-armed bandit problem, where actions have no consequence beyond the immediate reward. Real decision-making is richer: choosing to study hard today affects tomorrow's exam score, which in turn affects next year's career prospects. The agent's choices shape the world it subsequently inhabits. To reason about such problems rigorously, we need a mathematical framework that captures the interplay between states, actions, rewards, and transitions\,---\,a framework capacious enough to encode chess, robot locomotion, dialogue systems, and language-model alignment alike.
+
+That framework is the \emph{Markov Decision Process} (MDP)\index{Markov Decision Process}. Introduced by Richard Bellman in the 1950s and formalised by Howard (1960) and Puterman (1994), the MDP has become the standard model for sequential decision-making under uncertainty. Virtually every algorithm studied in this book\,---\,dynamic programming, Monte Carlo methods, temporal-difference learning, and policy gradient methods\,---\,can be understood as a strategy for solving, or approximately solving, an MDP.
+
+This chapter builds the MDP framework from the ground up. We begin with the Markov property, which is both a mathematical convenience and a deep claim about the structure of the world. We then define MDPs formally, introduce policies and value functions, derive the celebrated Bellman equations, and study their theoretical properties. The chapter closes with a detailed worked example that ties all concepts together.
+
+
+% ===========================================================
+\section{The Markov Property}
+\label{sec:markov-property}
+
+\subsection*{Motivation}
+
+Imagine a robot navigating a building. At any moment the robot has a position, orientation, and velocity. To decide where to move next, must it remember every step it has taken since it was switched on? Intuitively, no\,---\,knowing the current position and velocity should be enough to plan the next move. This intuition is the Markov property.
+
+More formally, consider a sequence of random variables $S_0, A_0, R_1, S_1, A_1, R_2, \ldots$ representing the state, action, and reward at each time step. The full history up to time $t$ is the tuple
+\[
+H_t = (S_0, A_0, R_1, S_1, A_1, R_2, \ldots, S_{t-1}, A_{t-1}, R_t, S_t).
+\]
+In principle, the next state $S_{t+1}$ might depend on this entire history. The Markov property asserts that only the present state $S_t$ matters.
+
+\begin{definition}[Markov Property]
+\label{def:markov-property}
+\index{Markov property}
+A stochastic process $(S_t)_{t \ge 0}$ satisfies the \textbf{Markov property} if, for all $t \ge 0$ and all states $s, s' \in \cS$ and actions $a \in \cA$,
+\begin{equation}
+\label{eq:markov-property}
+\Prob(S_{t+1} = s' \mid S_t = s, A_t = a, S_{t-1}, A_{t-1}, \ldots, S_0, A_0)
+= \Prob(S_{t+1} = s' \mid S_t = s, A_t = a).
+\end{equation}
+When~\eqref{eq:markov-property} holds, the current state $S_t$ is said to be a \textbf{sufficient statistic} for the history $H_t$.
+\end{definition}
+
+\begin{remark}
+\index{Markov property!joint reward-state}
+In the RL setting we additionally require the joint distribution of the next state \emph{and} the reward to satisfy the Markov property:
+\[
+\Prob(S_{t+1} = s', R_{t+1} = r \mid H_t) = \Prob(S_{t+1} = s', R_{t+1} = r \mid S_t, A_t).
+\]
+This is the form used throughout this book.
+\end{remark}
+
+\subsection*{Examples}
+
+\begin{example}[Weather model]
+\label{ex:weather}
+Suppose tomorrow's weather depends only on today's weather, not on last week's. If we encode the state as the current weather (sunny, cloudy, or rainy), the Markov property holds and the dynamics are captured by a $3 \times 3$ transition matrix. Adding more granularity\,---\,temperature, humidity, pressure\,---\,may produce an even better Markov state.
+\end{example}
+
+\begin{example}[Robot navigation]
+\label{ex:robot-nav}
+A mobile robot's next position depends on its current position and the velocity command it issues. If we represent the state as $(x, y, \theta, v)$---position, heading, speed\,---\,the dynamics are approximately Markov. Crucially, a purely positional state $(x, y)$ would \emph{not} be Markov, because future motion also depends on the current velocity.
+\end{example}
+
+\subsection*{When does the Markov property hold?}
+
+For many natural choices of state representation the Markov property is a good approximation, not an exact truth. Weather patterns have long-range dependencies; a robot's position is influenced by joint wear. In practice, we choose the state representation to be as informative as possible while remaining computationally tractable.
+
+When the Markov property fails\,---\,that is, when the agent can only observe a \emph{partial} view of the true state\,---\,we enter the realm of \emph{Partially Observable MDPs} (POMDPs)\index{POMDP}. POMDPs are substantially harder to solve, and we return to them briefly in Chapter~\ref{ch:agents}. For now, we assume the Markov property holds exactly.
+
+\subsection*{Why does the Markov property matter?}
+
+The Markov property has a profound consequence: any optimal decision rule can be stated as a function of the current state alone. Without it, an optimal policy might need to consult an ever-growing history. This would make both analysis and computation intractable. With it, we can write down concise optimality conditions\,---\,the Bellman equations\,---\,and design efficient algorithms to find or approximate optimal behaviour.
+
+
+% ===========================================================
+\section{Formal Definition of an MDP}
+\label{sec:mdp-definition}
+
+\begin{definition}[Markov Decision Process]
+\label{def:mdp}
+\index{MDP!definition}
+A \textbf{(discounted, finite) Markov Decision Process} is a tuple
+\begin{equation}
+\label{eq:mdp-tuple}
+\cM = (\cS,\, \cA,\, p,\, \gamma),
+\end{equation}
+where:
+\begin{description}[leftmargin=!,labelwidth=3.5cm]
+  \item[$\cS$] is a finite set of \textbf{states}\index{state space};
+  \item[$\cA$] is a finite set of \textbf{actions}\index{action space} (we write $\cA(s)$ for the actions available in state $s$);
+  \item[$p(s',r \mid s, a)$] is the \textbf{transition-reward kernel}\index{transition kernel}: the probability that taking action $a$ in state $s$ leads to next state $s'$ and reward $r \in \cR \subset \R$;
+  \item[$\gamma \in [0, 1)$] is the \textbf{discount factor}\index{discount factor}.
+\end{description}
+The reward set $\cR$ is assumed finite (or countable) and bounded: there exists $R_{\max} > 0$ such that $|r| \le R_{\max}$ for all $r \in \cR$. The kernel $p$ satisfies the normalisation condition
+\begin{equation}
+\label{eq:normalisation}
+\sum_{s' \in \cS} \sum_{r \in \cR} p(s', r \mid s, a) = 1
+\qquad \forall s \in \cS,\ \forall a \in \cA(s).
+\end{equation}
+\end{definition}
+
+The function $p$ is the single most important object in an MDP: it encodes everything the environment can do. At each time step $t$, the agent observes $S_t = s$, selects $A_t = a$, and the environment samples $(S_{t+1}, R_{t+1}) \sim p(\cdot, \cdot \mid s, a)$.
+
+\subsection*{Derived quantities}
+
+Working directly with the joint kernel $p(s', r \mid s, a)$ is sometimes cumbersome. Three derived quantities are more convenient.
+
+\begin{proposition}[Derived quantities]
+\label{prop:derived}
+\index{transition probability}
+\index{expected reward}
+For any $s \in \cS$, $a \in \cA(s)$, $s' \in \cS$:
+\begin{align}
+p(s' \mid s, a) &= \sum_{r \in \cR} p(s', r \mid s, a), \label{eq:state-tp} \\[4pt]
+r(s, a) &= \E[R_{t+1} \mid S_t = s, A_t = a]
+           = \sum_{s' \in \cS} \sum_{r \in \cR} r\, p(s', r \mid s, a), \label{eq:exp-reward-sa} \\[4pt]
+r(s, a, s') &= \E[R_{t+1} \mid S_t = s, A_t = a, S_{t+1} = s']
+              = \sum_{r \in \cR} r\, \frac{p(s', r \mid s, a)}{p(s' \mid s, a)},
+              \quad p(s' \mid s, a) > 0. \label{eq:exp-reward-sas}
+\end{align}
+\end{proposition}
+
+\begin{proof}
+\textbf{Equation~\eqref{eq:state-tp}.} The marginal probability of transitioning to $s'$ is obtained by summing the joint distribution over all reward values:
+\begin{align*}
+p(s' \mid s, a)
+&= \Prob(S_{t+1} = s' \mid S_t = s, A_t = a)\\
+&= \sum_{r \in \cR} \Prob(S_{t+1} = s', R_{t+1} = r \mid S_t = s, A_t = a)
+= \sum_{r \in \cR} p(s', r \mid s, a).
+\end{align*}
+
+\textbf{Equation~\eqref{eq:exp-reward-sa}.} By the law of total expectation,
+\[
+\E[R_{t+1} \mid S_t = s, A_t = a]
+= \sum_{r \in \cR} r\, \Prob(R_{t+1} = r \mid S_t = s, A_t = a).
+\]
+Marginalising over $s'$:
+\[
+\Prob(R_{t+1} = r \mid S_t = s, A_t = a)
+= \sum_{s' \in \cS} p(s', r \mid s, a).
+\]
+Substituting gives~\eqref{eq:exp-reward-sa}.
+
+\textbf{Equation~\eqref{eq:exp-reward-sas}.} By definition of conditional expectation,
+\[
+\E[R_{t+1} \mid S_t = s, A_t = a, S_{t+1} = s']
+= \sum_{r \in \cR} r\, \Prob(R_{t+1} = r \mid S_t = s, A_t = a, S_{t+1} = s').
+\]
+Applying Bayes' theorem,
+\begin{align*}
+&\Prob(R_{t+1} = r \mid S_t = s, A_t = a, S_{t+1} = s')\\
+&\qquad= \frac{\Prob(S_{t+1} = s', R_{t+1} = r \mid S_t = s, A_t = a)}{\Prob(S_{t+1} = s' \mid S_t = s, A_t = a)}
+= \frac{p(s', r \mid s, a)}{p(s' \mid s, a)}.
+\end{align*}
+Substituting gives~\eqref{eq:exp-reward-sas}.
+\end{proof}
+
+
+% ===========================================================
+\section{Episodes, Returns, and the Discount Factor}
+\label{sec:returns}
+
+\subsection*{Episodic and continuing tasks}
+
+\index{episodic task}\index{continuing task}
+RL tasks come in two flavours. In an \textbf{episodic task}, the agent--environment interaction breaks naturally into finite segments called \emph{episodes}: a game of chess, a robot arm reaching for an object, a conversation with a user. Each episode ends in a \textbf{terminal state}\index{terminal state}, after which the environment resets. In a \textbf{continuing task}, the interaction goes on indefinitely: a trading algorithm, a power grid controller, a recommendation engine.
+
+\subsection*{The return}
+
+Whatever the task type, the agent's goal is to maximise the total reward it accumulates. We formalise this with the \emph{return}.
+
+\begin{definition}[Return]
+\label{def:return}
+\index{return}
+The \textbf{return} $G_t$ at time $t$ is the discounted sum of future rewards:
+\begin{equation}
+\label{eq:return}
+G_t = \sum_{k=0}^{\infty} \gamma^k R_{t+k+1}
+    = R_{t+1} + \gamma R_{t+2} + \gamma^2 R_{t+3} + \cdots.
+\end{equation}
+For an episodic task terminating at step $T$, rewards beyond $T$ are zero, so~\eqref{eq:return} reduces to $G_t = \sum_{k=0}^{T-t-1} \gamma^k R_{t+k+1}$.
+\end{definition}
+
+\subsection*{The recursive property and its proof}
+
+The return satisfies a simple but crucial recursion.
+
+\begin{theorem}[Recursive return]
+\label{thm:recursive-return}
+\index{return!recursive property}
+For all $t$,
+\begin{equation}
+\label{eq:return-recursion}
+G_t = R_{t+1} + \gamma G_{t+1}.
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+Starting from definition~\eqref{eq:return}:
+\[
+G_t = R_{t+1} + \gamma R_{t+2} + \gamma^2 R_{t+3} + \cdots
+    = R_{t+1} + \gamma \bigl(R_{t+2} + \gamma R_{t+3} + \gamma^2 R_{t+4} + \cdots\bigr)
+    = R_{t+1} + \gamma G_{t+1}. \qedhere
+\]
+\end{proof}
+
+This one-line proof is deceptively important. It says that the value of being in a state right now equals the immediate reward plus the discounted value of the next state\,---\,the backbone of every Bellman equation and temporal-difference algorithm.
+
+\subsection*{Boundedness of the discounted return}
+
+\begin{proposition}[Bounded return]
+\label{prop:bounded-return}
+If $|R_t| \le R_{\max}$ for all $t$ and $\gamma \in [0, 1)$, then
+\begin{equation}
+\label{eq:bounded-return}
+|G_t| \le \frac{R_{\max}}{1 - \gamma}.
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+By the triangle inequality and the geometric series formula:
+\[
+|G_t| \le \sum_{k=0}^{\infty} \gamma^k |R_{t+k+1}|
+         \le R_{\max} \sum_{k=0}^{\infty} \gamma^k
+         = \frac{R_{\max}}{1-\gamma}. \qedhere
+\]
+\end{proof}
+
+\subsection*{The role of the discount factor}
+
+The parameter $\gamma$ interpolates between two extremes. When $\gamma = 0$, the agent is \emph{myopic}\index{myopic agent}: it cares only about the immediate reward $R_{t+1}$. When $\gamma \to 1$, the agent is \emph{far-sighted}\index{far-sighted agent}: rewards in the distant future matter almost as much as immediate ones. In practice $\gamma$ is chosen close to $1$ (e.g.\ $0.99$) for tasks requiring long-term planning, and closer to $0$ for tasks where recent rewards are most informative.
+
+Discounting also has a financial interpretation: $\gamma$ is the per-step interest factor, so $\gamma^k$ is the present value of a reward received $k$ steps in the future.
+
+\begin{example}[Worked return calculation]
+\label{ex:return-calc}
+\index{return!worked example}
+Suppose an agent observes rewards $R_1 = 1,\ R_2 = 2,\ R_3 = -1,\ R_4 = 3$, followed by a terminal state (all subsequent rewards zero), and the discount factor is $\gamma = 0.9$.
+
+Computing backwards from $t = 4$:
+\begin{align*}
+G_4 &= 0 \quad \text{(terminal)}, \\
+G_3 &= R_4 + \gamma G_4 = 3 + 0.9 \times 0 = 3.000, \\
+G_2 &= R_3 + \gamma G_3 = -1 + 0.9 \times 3 = -1 + 2.7 = 1.700, \\
+G_1 &= R_2 + \gamma G_2 = 2 + 0.9 \times 1.7 = 2 + 1.53 = 3.530, \\
+G_0 &= R_1 + \gamma G_1 = 1 + 0.9 \times 3.53 = 1 + 3.177 = 4.177.
+\end{align*}
+Notice that computing backwards via the recursion~\eqref{eq:return-recursion} is efficient: a single pass through the trajectory suffices.
+\end{example}
+
+
+% ===========================================================
+\section{Policies}
+\label{sec:policies}
+
+A \emph{policy}\index{policy} specifies how the agent behaves. Formally, it maps states to distributions over actions.
+
+\begin{definition}[Policy]
+\label{def:policy}
+\index{policy!stochastic}
+\index{policy!deterministic}
+A \textbf{stochastic policy} $\pi$ is a family of probability distributions over actions, indexed by states:
+\begin{equation}
+\label{eq:policy}
+\pi(a \mid s) = \Prob(A_t = a \mid S_t = s), \qquad s \in \cS,\ a \in \cA(s).
+\end{equation}
+A \textbf{deterministic policy} is a special case in which there exists a function $\pi : \cS \to \cA$ such that $\pi(a \mid s) = \ind\{a = \pi(s)\}$.
+\end{definition}
+
+\begin{remark}
+We use the same symbol $\pi$ for both the stochastic and deterministic cases; context will always clarify which is meant. All deterministic policies are stochastic policies (with point-mass distributions), but not vice versa.
+\end{remark}
+
+\begin{example}[Policies in a $2 \times 2$ gridworld]
+\label{ex:policy-gridworld}
+Consider a four-cell grid with cells $\{(0,0),(0,1),(1,0),(1,1)\}$ and actions $\{\text{Up, Down, Left, Right}\}$. A deterministic policy might map $(0,0) \mapsto \text{Right}$, $(0,1) \mapsto \text{Up}$, $(1,0) \mapsto \text{Right}$, $(1,1)\mapsto\text{Up}$. A stochastic policy might assign equal probability $0.25$ to each action in every state\,---\,a uniform random walk.
+\end{example}
+
+Under a fixed policy $\pi$, the MDP reduces to a Markov reward process: the state transitions are governed by
+\[
+p_\pi(s' \mid s) = \sum_{a \in \cA(s)} \pi(a \mid s)\, p(s' \mid s, a),
+\]
+and the expected reward from state $s$ is $r_\pi(s) = \sum_{a} \pi(a \mid s)\, r(s, a)$.
+
+
+% ===========================================================
+\section{Value Functions}
+\label{sec:value-functions}
+
+Value functions measure how good it is to be in a given state, or to take a given action in a given state, when following policy $\pi$.
+
+\begin{definition}[State-value and action-value functions]
+\label{def:value-functions}
+\index{value function!state-value}
+\index{value function!action-value}
+Let $\pi$ be a policy. The \textbf{state-value function} $V_\pi : \cS \to \R$ is
+\begin{equation}
+\label{eq:state-value}
+V_\pi(s) = \E_\pi[G_t \mid S_t = s],
+\end{equation}
+and the \textbf{action-value function} $Q_\pi : \cS \times \cA \to \R$ is
+\begin{equation}
+\label{eq:action-value}
+Q_\pi(s, a) = \E_\pi[G_t \mid S_t = s,\, A_t = a].
+\end{equation}
+Here $\E_\pi[\,\cdot\,]$ denotes expectation under the distribution over trajectories induced by $\pi$ and $p$.
+\end{definition}
+
+\subsection*{Relationship between $V_\pi$ and $Q_\pi$}
+
+\begin{proposition}
+\label{prop:v-q-relation}
+\index{value function!V-Q relationship}
+For any policy $\pi$ and state $s \in \cS$,
+\begin{equation}
+\label{eq:v-q-relation}
+V_\pi(s) = \sum_{a \in \cA(s)} \pi(a \mid s)\, Q_\pi(s, a).
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+Conditioning on the action taken at time $t$ and applying the law of total expectation:
+\begin{align*}
+V_\pi(s)
+&= \E_\pi[G_t \mid S_t = s] \\
+&= \sum_{a \in \cA(s)} \Prob_\pi(A_t = a \mid S_t = s)\,
+   \E_\pi[G_t \mid S_t = s, A_t = a] \\
+&= \sum_{a \in \cA(s)} \pi(a \mid s)\, Q_\pi(s, a). \qedhere
+\end{align*}
+\end{proof}
+
+Intuitively, $V_\pi(s)$ is the policy-weighted average of the action values: the agent's expected return is the average of what each action would give, weighted by the probability the policy assigns to each.
+
+\subsection*{Worked example: three-state MDP}
+
+\begin{example}[Value computation]
+\label{ex:value-computation}
+\index{value function!worked example}
+Consider the MDP shown in Figure~\ref{fig:three-state-mdp} with three states $\{s_1, s_2, s_3\}$, two actions $\{a_1, a_2\}$ available only in $s_1$ (states $s_2$ and $s_3$ are absorbing with zero reward), and discount factor $\gamma = 0.5$.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+    >=Stealth,
+    node distance=3.0cm,
+    state/.style={draw, circle, minimum size=1.0cm, thick},
+    absorb/.style={draw, circle, minimum size=1.0cm, thick, double}
+  ]
+  \node[state]  (s1) {$s_1$};
+  \node[absorb, right=3.2cm of s1] (s2) {$s_2$};
+  \node[absorb, below=2.2cm of s2] (s3) {$s_3$};
+
+  % action a1
+  \draw[->, bend left=18, thick]
+        (s1) to node[above] {$a_1,\ p{=}0.8,\ r{=}5$} (s2);
+  \draw[->, bend right=10, thick]
+        (s1) to node[right] {$a_1,\ p{=}0.2,\ r{=}1$} (s3);
+
+  % action a2
+  \draw[->, bend right=30, thick, dashed]
+        (s1) to node[below left] {$a_2,\ p{=}1,\ r{=}3$} (s3);
+
+  % self-loops on absorbing states
+  \draw[->, loop right, thick] (s2) to node[right] {$r{=}0$} (s2);
+  \draw[->, loop right, thick] (s3) to node[right] {$r{=}0$} (s3);
+\end{tikzpicture}
+\caption{A three-state MDP. Action $a_1$ (solid) leads to $s_2$ with probability $0.8$ and reward $5$, or to $s_3$ with probability $0.2$ and reward $1$. Action $a_2$ (dashed) leads deterministically to $s_3$ with reward $3$. States $s_2$ and $s_3$ are absorbing.}
+\label{fig:three-state-mdp}
+\end{figure}
+
+Because $s_2$ and $s_3$ are absorbing with zero future reward, $V_\pi(s_2) = V_\pi(s_3) = 0$ for any policy.
+
+For $s_1$, action values are computed directly from definition~\eqref{eq:action-value}:
+\begin{align*}
+Q_\pi(s_1, a_1)
+&= \E[R_{t+1} + \gamma G_{t+1} \mid S_t = s_1, A_t = a_1] \\
+&= 0.8 \cdot (5 + 0.5 \cdot 0) + 0.2 \cdot (1 + 0.5 \cdot 0)
+ = 4.0 + 0.2 = 4.2, \\
+Q_\pi(s_1, a_2)
+&= 1.0 \cdot (3 + 0.5 \cdot 0) = 3.0.
+\end{align*}
+
+Suppose the policy is $\pi(a_1 \mid s_1) = 0.6$, $\pi(a_2 \mid s_1) = 0.4$. Then by~\eqref{eq:v-q-relation}:
+\[
+V_\pi(s_1) = 0.6 \times 4.2 + 0.4 \times 3.0 = 2.52 + 1.20 = 3.72.
+\]
+Under the greedy policy ($\pi(a_1 \mid s_1) = 1$), we get $V_\pi(s_1) = 4.2$, which is larger.
+\end{example}
+
+
+% ===========================================================
+\section{The Bellman Equation}
+\label{sec:bellman-equation}
+
+The Bellman equation\index{Bellman equation} is the central identity of RL theory. It expresses the value function as a consistency condition: the value of a state must equal the expected immediate reward plus the discounted value of the successor state.
+
+\subsection*{Derivation for $V_\pi$}
+
+\begin{theorem}[Bellman expectation equation for $V_\pi$]
+\label{thm:bellman-v}
+\index{Bellman equation!for $V_\pi$}
+For any policy $\pi$ and any state $s \in \cS$,
+\begin{equation}
+\label{eq:bellman-v}
+V_\pi(s)
+= \sum_{a \in \cA(s)} \pi(a \mid s)
+  \sum_{s' \in \cS} \sum_{r \in \cR}
+  p(s', r \mid s, a)\bigl[r + \gamma V_\pi(s')\bigr].
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+Begin with the definition~\eqref{eq:state-value} and apply the recursive return~\eqref{eq:return-recursion}:
+\[
+V_\pi(s)
+= \E_\pi[G_t \mid S_t = s]
+= \E_\pi[R_{t+1} + \gamma G_{t+1} \mid S_t = s].
+\]
+By linearity of expectation:
+\[
+V_\pi(s) = \E_\pi[R_{t+1} \mid S_t = s]
+           + \gamma\, \E_\pi[G_{t+1} \mid S_t = s].
+\]
+Apply the tower property to the second term, conditioning on $S_{t+1}$:
+\[
+\E_\pi[G_{t+1} \mid S_t = s]
+= \E_\pi\!\bigl[\E_\pi[G_{t+1} \mid S_{t+1}] \mid S_t = s\bigr]
+= \E_\pi[V_\pi(S_{t+1}) \mid S_t = s].
+\]
+Therefore $V_\pi(s) = \E_\pi[R_{t+1} + \gamma V_\pi(S_{t+1}) \mid S_t = s]$.  Expanding the expectation explicitly over actions and transitions:
+\begin{align*}
+V_\pi(s)
+&= \sum_{a} \pi(a \mid s)\,
+   \E\bigl[R_{t+1} + \gamma V_\pi(S_{t+1}) \mid S_t = s, A_t = a\bigr] \\
+&= \sum_{a} \pi(a \mid s)
+   \sum_{s'} \sum_{r} p(s', r \mid s, a)\bigl[r + \gamma V_\pi(s')\bigr]. \qedhere
+\end{align*}
+\end{proof}
+
+\subsection*{Bellman equation for $Q_\pi$}
+
+\begin{proposition}[Bellman equation for $Q_\pi$]
+\label{prop:bellman-q}
+\index{Bellman equation!for $Q_\pi$}
+\begin{equation}
+\label{eq:bellman-q}
+Q_\pi(s, a)
+= \sum_{s' \in \cS} \sum_{r \in \cR} p(s', r \mid s, a)
+  \Bigl[r + \gamma \sum_{a' \in \cA(s')} \pi(a' \mid s')\, Q_\pi(s', a')\Bigr].
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+Starting from $Q_\pi(s,a) = \E_\pi[R_{t+1} + \gamma G_{t+1} \mid S_t=s, A_t=a]$ and applying the tower property conditioned on $(S_{t+1}, R_{t+1})$, then using $\E_\pi[G_{t+1} \mid S_{t+1} = s'] = V_\pi(s') = \sum_{a'} \pi(a' \mid s') Q_\pi(s', a')$.
+\end{proof}
+
+\subsection*{Backup diagram}
+
+The Bellman equation has a natural graphical representation known as a \emph{backup diagram}\index{backup diagram}, shown in Figure~\ref{fig:backup-v}. Open circles represent states; filled circles represent state-action pairs. The root is the state $s$; the diagram fans out to actions under $\pi$, then further to successor states under $p$.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+    >=Stealth,
+    level 1/.style={sibling distance=3.2cm, level distance=1.6cm},
+    level 2/.style={sibling distance=1.6cm, level distance=1.6cm},
+    state/.style={draw, circle, minimum size=0.65cm, fill=white, thick},
+    sa/.style={draw, circle, minimum size=0.55cm, fill=black!80, thick},
+  ]
+  % root state
+  \node[state] (root) {$s$}
+    child {
+      node[sa] (a1) {}
+      child { node[state] {$s'$} edge from parent node[left,  font=\footnotesize] {$p,r$} }
+      child { node[state] {$s''$} edge from parent node[right, font=\footnotesize] {$p,r$} }
+      edge from parent node[left, font=\footnotesize] {$\pi$}
+    }
+    child {
+      node[sa] (a2) {}
+      child { node[state] {$s'''$} edge from parent node[left, font=\footnotesize] {$p,r$} }
+      child { node[state] {$\cdots$} edge from parent node[right, font=\footnotesize] {$p,r$} }
+      edge from parent node[right, font=\footnotesize] {$\pi$}
+    };
+\end{tikzpicture}
+\caption{Backup diagram for the Bellman equation for $V_\pi(s)$. Open circles are states; filled circles are state-action pairs. Edges labelled $\pi$ show action selection; edges labelled $p,r$ show environment transitions with associated reward.}
+\label{fig:backup-v}
+\end{figure}
+
+\subsection*{Matrix form for finite MDPs}
+
+When $\cS$ is finite with $n = |\cS|$ states, equation~\eqref{eq:bellman-v} can be written in matrix-vector form. Define:
+\begin{itemize}[leftmargin=*]
+  \item $\mathbf{v}_\pi \in \R^n$ with $[\mathbf{v}_\pi]_s = V_\pi(s)$;
+  \item $\mathbf{r}_\pi \in \R^n$ with $[\mathbf{r}_\pi]_s = r_\pi(s) = \sum_a \pi(a \mid s) r(s,a)$;
+  \item $\mathbf{P}_\pi \in \R^{n \times n}$ with $[\mathbf{P}_\pi]_{s,s'} = \sum_a \pi(a \mid s) p(s' \mid s, a)$.
+\end{itemize}
+
+Then the Bellman equation becomes the linear system
+\begin{equation}
+\label{eq:bellman-matrix}
+\mathbf{v}_\pi = \mathbf{r}_\pi + \gamma \mathbf{P}_\pi \mathbf{v}_\pi,
+\end{equation}
+with unique solution
+\begin{equation}
+\label{eq:bellman-matrix-solution}
+\mathbf{v}_\pi = (I - \gamma \mathbf{P}_\pi)^{-1} \mathbf{r}_\pi.
+\end{equation}
+The matrix $(I - \gamma \mathbf{P}_\pi)$ is invertible because $\mathbf{P}_\pi$ is a stochastic matrix (spectral radius $1$), so all eigenvalues of $\gamma \mathbf{P}_\pi$ have modulus at most $\gamma < 1$, making all eigenvalues of $(I - \gamma \mathbf{P}_\pi)$ bounded away from zero.
+
+\begin{example}[Solving the Bellman system]
+\label{ex:bellman-system}
+\index{Bellman equation!worked example}
+Return to Example~\ref{ex:value-computation} but now suppose both states $s_2$ and $s_3$ loop back to $s_1$ with reward $0$, and $s_1$ uses the policy $\pi(a_1|s_1)=0.6$, $\pi(a_2|s_1)=0.4$, $\gamma=0.5$.
+
+The transition matrix under $\pi$ from $s_1$ is:
+\[
+p_\pi(s_2 \mid s_1) = 0.6 \times 0.8 = 0.48,\quad
+p_\pi(s_3 \mid s_1) = 0.6 \times 0.2 + 0.4 \times 1 = 0.52.
+\]
+Expected reward: $r_\pi(s_1) = 0.6 \times 4.2 + 0.4 \times 3.0 = 3.72$ (as before). For simplicity set $V(s_2) = V(s_3) = 0$ (absorbing). The Bellman equation for $s_1$ is then:
+\[
+V_\pi(s_1) = 3.72 + 0.5 (0.48 \cdot 0 + 0.52 \cdot 0) = 3.72.
+\]
+This matches the direct calculation in Example~\ref{ex:value-computation}.
+\end{example}
+
+
+% ===========================================================
+\section{Optimal Value Functions and the Bellman Optimality Equation}
+\label{sec:bellman-optimality}
+
+\subsection*{Optimal value functions}
+
+\begin{definition}[Optimal value functions]
+\label{def:optimal-value}
+\index{optimal value function}
+\index{optimal policy}
+The \textbf{optimal state-value function} is
+\begin{equation}
+\label{eq:v-star}
+V_*(s) = \sup_\pi V_\pi(s), \qquad s \in \cS,
+\end{equation}
+and the \textbf{optimal action-value function} is
+\begin{equation}
+\label{eq:q-star}
+Q_*(s, a) = \sup_\pi Q_\pi(s, a), \qquad s \in \cS,\ a \in \cA(s).
+\end{equation}
+A policy $\pi_*$ is \textbf{optimal} if $V_{\pi_*}(s) = V_*(s)$ for all $s \in \cS$.
+\end{definition}
+
+\subsection*{Policy ordering and existence of an optimal policy}
+
+\begin{definition}[Policy ordering]
+\label{def:policy-ordering}
+\index{policy ordering}
+We write $\pi' \succeq \pi$ and say $\pi'$ is \textbf{at least as good as} $\pi$ if
+\[
+V_{\pi'}(s) \ge V_\pi(s) \qquad \forall s \in \cS.
+\]
+\end{definition}
+
+\begin{theorem}[Existence of an optimal policy]
+\label{thm:optimal-policy-exists}
+\index{optimal policy!existence}
+For any finite MDP there exists at least one deterministic optimal policy $\pi_*$ such that $V_{\pi_*}(s) = V_*(s)$ for all $s \in \cS$.
+\end{theorem}
+
+\begin{proof}[Proof sketch]
+The key observation is that a policy is optimal if and only if, at every state $s$, it acts greedily with respect to $V_*$:
+\[
+\pi_*(a \mid s) > 0 \implies a \in \argmax_{a' \in \cA(s)} Q_*(s, a').
+\]
+Such a deterministic policy always exists (simply break ties arbitrarily). That $V_{\pi_*} = V_*$ then follows from the Bellman optimality equations derived below.
+\end{proof}
+
+The optimal value functions satisfy their own Bellman equations, obtained by replacing the policy-weighted sum over actions with a maximum.
+
+\begin{theorem}[Bellman optimality equations]
+\label{thm:bellman-optimality}
+\index{Bellman optimality equation}
+\begin{align}
+V_*(s) &= \max_{a \in \cA(s)}
+           \sum_{s' \in \cS} \sum_{r \in \cR}
+           p(s', r \mid s, a)\bigl[r + \gamma V_*(s')\bigr],
+           \label{eq:bellman-opt-v} \\[4pt]
+Q_*(s, a) &= \sum_{s' \in \cS} \sum_{r \in \cR}
+             p(s', r \mid s, a)
+             \Bigl[r + \gamma \max_{a' \in \cA(s')} Q_*(s', a')\Bigr].
+             \label{eq:bellman-opt-q}
+\end{align}
+\end{theorem}
+
+\begin{proof}
+For~\eqref{eq:bellman-opt-v}: since $V_*(s) = \max_\pi V_\pi(s)$, the Bellman equation~\eqref{eq:bellman-v} for the optimal policy $\pi_*$ gives
+\[
+V_*(s) = \sum_a \pi_*(a|s) \sum_{s',r} p(s',r|s,a)[r + \gamma V_*(s')].
+\]
+Because $\pi_*$ is greedy w.r.t.\ $V_*$, the weighted sum over $a$ equals the maximum over $a$, yielding~\eqref{eq:bellman-opt-v}. Equation~\eqref{eq:bellman-opt-q} follows analogously from the $Q$-version of the Bellman equation.
+\end{proof}
+
+\begin{remark}
+The Bellman optimality equations are \emph{non-linear} in $V_*$ (due to the $\max$ operator) and cannot be solved by simple matrix inversion. Dynamic programming and related algorithms are needed; see Chapter~\ref{ch:dp}.
+\end{remark}
+
+
+% ===========================================================
+\section{The Bellman Operator}
+\label{sec:bellman-operator}
+
+The Bellman equations can be studied as fixed-point problems of linear operators, a perspective that explains why algorithms for solving them converge.
+
+\begin{definition}[Bellman operators]
+\label{def:bellman-operators}
+\index{Bellman operator}
+Let $\cB(\cS)$ denote the Banach space of bounded functions $V : \cS \to \R$ equipped with the sup-norm $\|V\|_\infty = \max_{s \in \cS} |V(s)|$.
+
+The \textbf{Bellman policy operator} $\cT_\pi : \cB(\cS) \to \cB(\cS)$ is
+\begin{equation}
+\label{eq:bellman-policy-op}
+(\cT_\pi V)(s)
+= \sum_{a \in \cA(s)} \pi(a \mid s)
+  \sum_{s', r} p(s', r \mid s, a)\bigl[r + \gamma V(s')\bigr].
+\end{equation}
+The \textbf{Bellman optimality operator} $\cT_* : \cB(\cS) \to \cB(\cS)$ is
+\begin{equation}
+\label{eq:bellman-opt-op}
+(\cT_* V)(s)
+= \max_{a \in \cA(s)}
+  \sum_{s', r} p(s', r \mid s, a)\bigl[r + \gamma V(s')\bigr].
+\end{equation}
+\end{definition}
+
+With this notation, the Bellman equations read $V_\pi = \cT_\pi V_\pi$ and $V_* = \cT_* V_*$: value functions are \emph{fixed points} of their respective Bellman operators.
+
+\begin{theorem}[$\gamma$-contraction]
+\label{thm:contraction}
+\index{Bellman operator!contraction}
+Both $\cT_\pi$ and $\cT_*$ are $\gamma$-contractions in the sup-norm: for any $V, W \in \cB(\cS)$,
+\begin{align}
+\|\cT_\pi V - \cT_\pi W\|_\infty &\le \gamma \|V - W\|_\infty, \label{eq:contraction-pi} \\
+\|\cT_* V - \cT_* W\|_\infty &\le \gamma \|V - W\|_\infty. \label{eq:contraction-star}
+\end{align}
+\end{theorem}
+
+\begin{proof}
+We prove~\eqref{eq:contraction-pi}; the proof of~\eqref{eq:contraction-star} is analogous. Fix $s \in \cS$:
+\begin{align*}
+|(\cT_\pi V)(s) - (\cT_\pi W)(s)|
+&= \Bigl|\sum_a \pi(a|s) \sum_{s',r} p(s',r|s,a)\,\gamma\bigl(V(s') - W(s')\bigr)\Bigr| \\
+&\le \sum_a \pi(a|s) \sum_{s',r} p(s',r|s,a)\,\gamma\, |V(s') - W(s')| \\
+&\le \gamma\, \|V - W\|_\infty
+     \underbrace{\sum_a \pi(a|s) \sum_{s',r} p(s',r|s,a)}_{=\,1}.
+\end{align*}
+Taking the maximum over $s$ gives~\eqref{eq:contraction-pi}.
+
+For~\eqref{eq:contraction-star}, use the inequality $|\max_a f(a) - \max_a g(a)| \le \max_a |f(a) - g(a)|$ and proceed identically.
+\end{proof}
+
+\begin{corollary}[Banach fixed-point theorem]
+\label{cor:banach}
+\index{Banach fixed-point theorem}
+Since $\cB(\cS)$ is a complete metric space (it is finite-dimensional) and $\cT_\pi$, $\cT_*$ are contractions ($\gamma < 1$), the Banach fixed-point theorem guarantees:
+\begin{enumerate}
+  \item Each operator has a \emph{unique} fixed point: $V_\pi$ and $V_*$ respectively.
+  \item Iterating the operator from any initial $V^{(0)} \in \cB(\cS)$:
+        \[V^{(k+1)} = \cT V^{(k)}\]
+        converges to the fixed point at a geometric rate:
+        \[
+        \|V^{(k)} - V_\pi\|_\infty \le \gamma^k \|V^{(0)} - V_\pi\|_\infty \to 0.
+        \]
+\end{enumerate}
+\end{corollary}
+
+This corollary is the theoretical backbone of \emph{policy evaluation} in dynamic programming (Chapter~\ref{ch:dp}) and of TD(0) learning (Chapter~\ref{ch:td}): both can be understood as iterative application of (an approximation to) the Bellman operator.
+
+
+% ===========================================================
+\section{Worked Example: The Student MDP}
+\label{sec:student-mdp}
+
+We now work through a complete example inspired by the student MDP of Sutton and Barto (2018).\index{student MDP}
+
+\begin{example}[Student MDP]
+\label{ex:student-mdp}
+A student can be in one of four states:
+\begin{itemize}[leftmargin=*]
+  \item $s_1$: \textbf{Class} --- attending lecture.
+  \item $s_2$: \textbf{Facebook} --- browsing social media.
+  \item $s_3$: \textbf{Study} --- studying for an exam.
+  \item $s_4$: \textbf{Sleep} --- sleeping (terminal / absorbing state).
+\end{itemize}
+The actions and transition dynamics are given in Table~\ref{tab:student-mdp}, and the MDP is depicted in Figure~\ref{fig:student-mdp}. We use discount factor $\gamma = 0.9$.
+
+\begin{table}[ht]
+\centering
+\caption{Transition dynamics of the Student MDP. Each row gives the action taken in the current state, the next state, its probability, and the reward received.}
+\label{tab:student-mdp}
+\begin{tabular}{lllrr}
+\toprule
+State & Action & Next state & Prob.\ $p$ & Reward $r$ \\
+\midrule
+$s_1$ (Class) & attend & $s_3$ (Study) & 1.0 & $-2$ \\
+$s_1$ (Class) & distract & $s_2$ (Facebook) & 1.0 & $-1$ \\
+$s_2$ (Facebook) & quit & $s_1$ (Class) & 1.0 & $-1$ \\
+$s_2$ (Facebook) & keep & $s_2$ (Facebook) & 1.0 & $-1$ \\
+$s_3$ (Study) & pass & $s_4$ (Sleep) & 1.0 & $+10$ \\
+$s_3$ (Study) & study more & $s_3$ (Study) & 1.0 & $-2$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+    >=Stealth, thick,
+    state/.style={draw, rounded corners, minimum width=2.0cm, minimum height=0.8cm},
+    every edge/.style={->, thick}
+  ]
+  \node[state] (c)  at (0, 0)    {Class $s_1$};
+  \node[state] (fb) at (-3, -2)  {Facebook $s_2$};
+  \node[state] (st) at (3, -2)   {Study $s_3$};
+  \node[state, double] (sl) at (3, -4.5) {Sleep $s_4$};
+
+  \draw (c) edge[bend left=15] node[above right, font=\small] {attend, $-2$} (st);
+  \draw (c) edge[bend right=15] node[above left, font=\small] {distract, $-1$} (fb);
+  \draw (fb) edge[bend right=15] node[below right, font=\small] {quit, $-1$} (c);
+  \draw (fb) edge[loop left] node[left, font=\small] {keep, $-1$} (fb);
+  \draw (st) edge node[right, font=\small] {pass, $+10$} (sl);
+  \draw (st) edge[loop right] node[right, font=\small] {study more, $-2$} (st);
+\end{tikzpicture}
+\caption{The Student MDP. Edges are labelled with the action and the immediate reward. The terminal state Sleep ($s_4$, double border) is absorbing.}
+\label{fig:student-mdp}
+\end{figure}
+
+\paragraph{Computing value functions under the optimal policy.}
+The optimal strategy is clearly to attend class and then pass the exam: attend $s_1$, reach $s_3$, immediately pass to $s_4$.
+
+Under this policy $\pi_*$:
+\begin{align*}
+V_*(s_4) &= 0 \quad \text{(absorbing)}, \\
+V_*(s_3) &= r(\text{pass}) + \gamma V_*(s_4) = 10 + 0.9 \times 0 = 10.0, \\
+V_*(s_1) &= r(\text{attend}) + \gamma V_*(s_3) = -2 + 0.9 \times 10 = -2 + 9 = 7.0.
+\end{align*}
+So the optimal state value of Class is $7.0$.
+
+\paragraph{Computing action values.}
+At $s_1$:
+\begin{align*}
+Q_*(s_1, \text{attend})   &= -2 + 0.9 \times 10 = 7.0, \\
+Q_*(s_1, \text{distract}) &= -1 + 0.9 \times V_*(s_2).
+\end{align*}
+For $V_*(s_2)$ we note that from Facebook the optimal action is \emph{quit} (returning to Class, which has value $7.0$), so:
+\[
+V_*(s_2) = -1 + 0.9 \times 7.0 = -1 + 6.3 = 5.3.
+\]
+Therefore:
+\[
+Q_*(s_1, \text{distract}) = -1 + 0.9 \times 5.3 = -1 + 4.77 = 3.77.
+\]
+Since $Q_*(s_1, \text{attend}) = 7.0 > 3.77 = Q_*(s_1, \text{distract})$, the greedy policy indeed chooses ``attend'', confirming our earlier reasoning.
+
+\paragraph{Verifying the Bellman optimality equation at $s_2$.}
+The Bellman optimality equation~\eqref{eq:bellman-opt-v} says:
+\[
+V_*(s_2)
+= \max\bigl\{Q_*(s_2, \text{quit}),\, Q_*(s_2, \text{keep})\bigr\}.
+\]
+We have:
+\begin{align*}
+Q_*(s_2, \text{quit}) &= -1 + 0.9 \times 7.0 = 5.3, \\
+Q_*(s_2, \text{keep}) &= -1 + 0.9 \times V_*(s_2) = -1 + 0.9 \times 5.3 = 3.77.
+\end{align*}
+Indeed $\max\{5.3, 3.77\} = 5.3 = V_*(s_2)$. \checkmark
+\end{example}
+
+
+% ===========================================================
+\section{Summary}
+\label{sec:mdp-summary}
+
+\begin{itemize}[leftmargin=*]
+  \item The \textbf{Markov property} asserts that the future is independent of the past given the present state. It is the foundation that makes RL tractable.
+  \item A \textbf{Markov Decision Process} $(\cS, \cA, p, \gamma)$ is the standard framework for sequential decision-making. The kernel $p(s', r \mid s, a)$ encodes all dynamics.
+  \item The \textbf{return} $G_t = \sum_k \gamma^k R_{t+k+1}$ captures cumulative discounted future reward. Its recursive property $G_t = R_{t+1} + \gamma G_{t+1}$ is the seed of the Bellman equations.
+  \item \textbf{Value functions} $V_\pi(s)$ and $Q_\pi(s,a)$ measure expected return under policy $\pi$. They are related by $V_\pi(s) = \sum_a \pi(a|s) Q_\pi(s,a)$.
+  \item The \textbf{Bellman expectation equations} express value functions as self-consistent fixed points. They can be solved exactly via linear algebra for small MDPs.
+  \item The \textbf{Bellman optimality equations} characterise $V_*$ and $Q_*$ via a $\max$ operator. Their solutions yield the optimal policy directly.
+  \item The \textbf{Bellman operators} $\cT_\pi$ and $\cT_*$ are $\gamma$-contractions in the sup-norm. By the Banach fixed-point theorem, iterating either operator from any starting point converges geometrically to the unique fixed point. This is the theoretical bedrock of dynamic programming and TD learning.
+\end{itemize}
+
+
+% ===========================================================
+\section*{Exercises}
+\addcontentsline{toc}{section}{Exercises}
+
+\begin{exercise}
+\label{ex:markov-state}
+Give an example of a task where the raw sensor observation (e.g.\ a single pixel) is \emph{not} a Markov state, but an augmented state (e.g.\ the last $k$ frames) is. Explain why the augmented state satisfies the Markov property.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:return-constant}
+Consider a continuing task in which the agent always receives reward $c > 0$ at every step, for some constant $c$, and $\gamma \in [0,1)$.
+\begin{enumerate}[label=(\alph*)]
+  \item Compute $G_t$ in closed form.
+  \item Show that $G_t = c/(1-\gamma)$.
+  \item Explain why the condition $\gamma < 1$ is essential for the return to be finite.
+  \item What happens when $\gamma = 1$?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:q-from-p}
+Using the definitions in Proposition~\ref{prop:derived}, verify that
+\[
+r(s, a) = \sum_{s' \in \cS} p(s' \mid s, a)\, r(s, a, s').
+\]
+This shows that the three-argument expected reward $r(s,a,s')$ is more informative than $r(s,a)$.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:action-values-comp}
+In the Student MDP (Example~\ref{ex:student-mdp}), suppose the student follows a policy where, in state $s_3$, they study more with probability $0.5$ and pass with probability $0.5$.  Use $\gamma = 0.9$.
+\begin{enumerate}[label=(\alph*)]
+  \item Write the Bellman equation for $V_\pi(s_3)$ under this mixed policy.
+  \item Solve for $V_\pi(s_3)$.
+  \item Compare with $V_*(s_3) = 10$ and explain the difference.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:bellman-q-proof}
+Prove the Bellman equation for $Q_\pi$ (Proposition~\ref{prop:bellman-q}) in full detail, starting from the definition $Q_\pi(s,a) = \E_\pi[G_t \mid S_t = s, A_t = a]$ and the recursive return~\eqref{eq:return-recursion}.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:matrix-bellman}
+Consider a two-state MDP with $\cS = \{s_1, s_2\}$, a single action, transition matrix
+\[
+P_\pi = \begin{pmatrix} 0.3 & 0.7 \\ 0.6 & 0.4 \end{pmatrix},
+\]
+expected reward vector $\mathbf{r}_\pi = (2, 5)^\top$, and $\gamma = 0.8$.
+\begin{enumerate}[label=(\alph*)]
+  \item Write the matrix Bellman equation~\eqref{eq:bellman-matrix}.
+  \item Compute $(I - \gamma P_\pi)$ explicitly.
+  \item Solve for $\mathbf{v}_\pi$ using the formula~\eqref{eq:bellman-matrix-solution}.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:contraction-star}
+Complete the proof of Theorem~\ref{thm:contraction} for the optimality operator $\cT_*$. \emph{Hint}: use the identity $|\max_a f(a) - \max_a g(a)| \le \max_a |f(a) - g(a)|$.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:convergence-rate}
+Starting from $V^{(0)} \equiv 0$ and applying $\cT_*$ iteratively with $\gamma = 0.9$ and $R_{\max} = 1$:
+\begin{enumerate}[label=(\alph*)]
+  \item Give an upper bound on $\|V^{(k)} - V_*\|_\infty$ in terms of $k$ and $\gamma$.
+  \item How many iterations are needed to guarantee $\|V^{(k)} - V_*\|_\infty \le 0.01$?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:optimal-policy-unique}
+Give an example of a finite MDP that has infinitely many optimal policies but a unique optimal value function $V_*$. Verify that all optimal policies achieve $V_*$.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:pomdp-teaser}
+Consider a $1 \times 3$ grid (cells $1$, $2$, $3$). The agent can move left or right. Cell $3$ is the goal (reward $+1$, terminal). The agent does \emph{not} observe its current cell; it only receives a signal indicating whether it just bumped into a wall.
+\begin{enumerate}[label=(\alph*)]
+  \item Explain why the observation is not a Markov state.
+  \item Define an augmented state (using the observation history) that restores the Markov property.
+  \item Describe an optimal policy in terms of this augmented state.
+\end{enumerate}
+\end{exercise}

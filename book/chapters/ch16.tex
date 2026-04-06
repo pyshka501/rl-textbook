@@ -1,0 +1,1143 @@
+% ===========================================================
+% Chapter 16: Multi-Agent Systems and RL
+% Part IV: Frontiers
+% ===========================================================
+
+\chapter{Multi-Agent Systems and RL}
+\label{ch:agents}
+
+\begin{quote}
+\itshape
+The whole is more than the sum of its parts.
+\par\medskip
+\upshape\raggedleft
+---\,Aristotle, \textit{Metaphysics}
+\end{quote}
+
+\bigskip
+
+Every setting we have studied so far involves a single learner interacting
+with a world whose dynamics are fixed. The environment may be
+stochastic, partially observed, or high-dimensional, but it does not
+itself \emph{learn}. In the real world, this assumption rarely holds.
+Financial markets are populated by traders who each adapt to the
+strategies of the others. Autonomous vehicles must negotiate
+intersections with other vehicles that are simultaneously trying to
+navigate safely. A team of rescue robots must divide a building among
+themselves without central coordination. Language models deployed as
+assistants increasingly delegate sub-tasks to specialised
+agents\,---\,other models that respond, check, or criticise. In every
+case, the ``environment'' contains \emph{other agents}, and those agents
+are themselves learning and adapting.
+
+Multi-agent reinforcement learning (MARL)\index{multi-agent reinforcement learning|textbf}
+is the study of how multiple decision-making entities can learn good
+behaviour when they coexist and interact. The field sits at the
+intersection of game theory, optimisation, and modern deep learning,
+and it poses challenges that are qualitatively different from
+single-agent RL: the environment is \emph{non-stationary} because
+other agents are changing; rewards may be shared, competing, or
+somewhere in between; and the space of joint behaviours is
+exponentially larger than the space of individual behaviours.
+
+This chapter develops the theory and practice of MARL progressively.
+Section~\ref{sec:markov-games} introduces Markov games\,---\,the
+natural multi-agent generalisation of MDPs\,---\,and defines the
+solution concept of Nash equilibrium. Section~\ref{sec:cooperative}
+covers cooperative MARL, including the centralised-training
+with decentralised-execution (CTDE) paradigm and the QMIX and MAPPO
+algorithms. Section~\ref{sec:competitive} studies competitive and
+mixed settings, including zero-sum games, self-play, and the story of
+AlphaGo and AlphaZero. Section~\ref{sec:communication} examines
+emergent communication and social dilemmas.
+Section~\ref{sec:marl-llms} brings the framework to large language
+models, covering debate, multi-agent code generation, and agentic
+workflows. Section~\ref{sec:marl-challenges} catalogues the open
+challenges, and Section~\ref{sec:marl-summary} summarises.
+
+% ===========================================================
+\section{Multi-Agent Markov Games}
+\label{sec:markov-games}
+% ===========================================================
+
+\subsection{From MDPs to Markov Games}
+
+Recall from Chapter~\ref{ch:mdp} that a Markov decision process is
+a tuple $(\cS, \cA, \cT, \cR, \gamma)$ in which a single agent takes
+actions, the environment transitions to a new state, and the agent
+receives a scalar reward. When there are $N \geq 2$ agents, the
+natural extension is a \emph{Markov game}\index{Markov game|textbf},
+also called a \emph{stochastic game}\index{stochastic game}.
+
+\begin{definition}[Markov Game]
+\label{def:markov-game}
+A \textbf{Markov game} with $N$ agents is a tuple
+\[
+  \mathcal{G} = \bigl(\cS,\, \cA^1, \ldots, \cA^N,\, \cT,\,
+                       R^1, \ldots, R^N,\, \gamma\bigr),
+\]
+where:
+\begin{itemize}[leftmargin=*]
+  \item $\cS$ is a finite set of \textbf{states} shared by all agents.
+  \item $\cA^i$ is the \textbf{action set} for agent $i$. The
+    \textbf{joint action space} is $\cA = \cA^1 \times \cdots \times \cA^N$.
+  \item $\cT : \cS \times \cA \to \Delta(\cS)$ is the
+    \textbf{transition kernel}; the next state depends on the current
+    state \emph{and} the joint action of all agents.
+  \item $R^i : \cS \times \cA \times \cS \to \R$ is the
+    \textbf{reward function} for agent $i$. Each agent has its own
+    reward, which may depend on the actions of all agents.
+  \item $\gamma \in [0,1)$ is a shared discount factor.
+\end{itemize}
+\end{definition}
+
+When $N = 1$, a Markov game reduces to a standard MDP. When all
+agents share the same reward function, $R^1 = \cdots = R^N$, the game
+is \textbf{fully cooperative}\index{fully cooperative game}. When
+$\sum_i R^i = 0$ at every transition, it is \textbf{zero-sum}\index{zero-sum game}.
+The general case, where rewards are neither identical nor summing to
+zero, is called a \textbf{mixed or general-sum
+game}\index{general-sum game}.
+
+The joint policy\index{joint policy} of all agents is
+$\boldsymbol{\pi} = (\pi^1, \ldots, \pi^N)$, where each $\pi^i :
+\cS \to \Delta(\cA^i)$ is a stochastic policy for agent $i$.
+Agent $i$'s objective is to maximise its own discounted return:
+\begin{equation}
+\label{eq:marl-return}
+J^i(\boldsymbol{\pi}) = \E_{\boldsymbol{\pi}}\!\left[
+  \sum_{t=0}^{\infty} \gamma^t R^i(s_t, \bm{a}_t, s_{t+1})
+\right],
+\end{equation}
+where $\bm{a}_t = (a_t^1, \ldots, a_t^N)$ is drawn from the product
+policy $\prod_i \pi^i(\cdot \mid s_t)$.
+
+
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  state/.style={circle, draw, minimum size=1.0cm, font=\small},
+  agent/.style={rectangle, draw, rounded corners, minimum width=1.8cm,
+                minimum height=0.7cm, font=\small, fill=gray!12},
+  action/.style={->, >=Stealth, thick},
+  reward/.style={->, >=Stealth, dashed, red!70!black},
+  trans/.style={->, >=Stealth, thick, blue!60!black}
+]
+
+% States
+\node[state] (s) at (0,0) {$s_t$};
+\node[state] (sn) at (5,0) {$s_{t+1}$};
+
+% Agents
+\node[agent] (a1) at (-2.2, 1.5) {Agent $1$};
+\node[agent] (aN) at (-2.2,-1.5) {Agent $N$};
+\node[font=\small] (dots) at (-2.2, 0) {$\vdots$};
+
+% Actions into state
+\draw[action] (a1.east) -- node[above, font=\scriptsize] {$a_t^1$}
+              ([yshift=3pt]s.west);
+\draw[action] (aN.east) -- node[below, font=\scriptsize] {$a_t^N$}
+              ([yshift=-3pt]s.west);
+
+% Transition
+\draw[trans] (s) -- node[above, font=\small] {$\mathcal{T}(s_{t+1}\mid s_t,\bm{a}_t)$} (sn);
+
+% Reward arrows: orthogonal with one right angle
+\draw[reward] (sn.north) -- ++(0, 1.2) -| (a1.east)
+              node[pos=0.25, above, font=\scriptsize, red!70!black] {$R^1$};
+\draw[reward] (sn.south) -- ++(0,-1.2) -| (aN.east)
+              node[pos=0.25, below, font=\scriptsize, red!70!black] {$R^N$};
+
+\end{tikzpicture}
+\caption{A Markov game with $N$ agents. At each timestep, every agent
+  observes the shared state $s_t$ and chooses an action. The joint
+  action $\bm{a}_t$ drives the transition to $s_{t+1}$, and each
+  agent receives its own individual reward $R^i$.}
+\label{fig:markov-game}
+\end{figure}
+% \begin{figure}[ht]
+% \centering
+% \begin{tikzpicture}[
+%   node distance=1.6cm and 2.4cm,
+%   state/.style={circle, draw, minimum size=1.0cm, font=\small},
+%   agent/.style={rectangle, draw, rounded corners, minimum width=1.8cm,
+%                 minimum height=0.7cm, font=\small, fill=gray!12},
+%   action/.style={->, >=Stealth, thick},
+%   reward/.style={->, >=Stealth, dashed, red!70!black},
+%   trans/.style={->, >=Stealth, thick, blue!60!black}
+% ]
+% % State node
+% \node[state] (s) {$s_t$};
+% \node[state, right=3.8cm of s] (sn) {$s_{t+1}$};
+
+% % Agents
+% \node[agent, above left=0.5cm and 0.4cm of s] (a1) {Agent $1$};
+% \node[agent, below left=0.5cm and 0.4cm of s] (aN) {Agent $N$};
+% \node[font=\small, left=0.55cm of s, yshift=0.05cm] (dots) {$\vdots$};
+
+% % Actions into state
+% \draw[action] (a1.east) -- node[above, font=\scriptsize] {$a_t^1$}
+%               ([yshift=3pt]s.west);
+% \draw[action] (aN.east) -- node[below, font=\scriptsize] {$a_t^N$}
+%               ([yshift=-3pt]s.west);
+
+% % Transition
+% \draw[trans] (s) -- node[above, font=\small] {$\cT(s_{t+1}\mid s_t,\bm{a}_t)$} (sn);
+
+% % Reward arrows
+% \draw[reward] (sn.north) to[bend left=30]
+%               node[above right, font=\scriptsize, red!70!black] {$R^1$} (a1.east);
+% \draw[reward] (sn.south) to[bend right=30]
+%               node[below right, font=\scriptsize, red!70!black] {$R^N$} (aN.east);
+
+% \end{tikzpicture}
+% \caption{A Markov game with $N$ agents. At each timestep, every agent
+%   observes the shared state $s_t$ and chooses an action. The joint
+%   action $\bm{a}_t$ drives the transition to $s_{t+1}$, and each
+%   agent receives its own individual reward $R^i$.}
+% \label{fig:markov-game}
+% \end{figure}
+
+\subsection{Nash Equilibrium}
+
+Because each agent's return depends on the policies of \emph{all}
+agents, the standard notion of optimality from single-agent RL no
+longer applies. Raising agent $i$'s return by changing $\pi^i$ may
+require the other agents to hold their policies fixed\,---\,or it may
+backfire if they adapt. The solution concept borrowed from game theory
+is the \textbf{Nash equilibrium}\index{Nash equilibrium|textbf}.
+
+\begin{definition}[Nash Equilibrium]
+\label{def:nash}
+A joint policy $\boldsymbol{\pi}^* = (\pi^{1*}, \ldots, \pi^{N*})$
+is a \textbf{Nash equilibrium} if, for every agent $i$ and every
+alternative policy $\tilde\pi^i$,
+\[
+  J^i(\pi^{i*}, \boldsymbol{\pi}^{-i*}) \;\geq\;
+  J^i(\tilde\pi^i, \boldsymbol{\pi}^{-i*}),
+\]
+where $\boldsymbol{\pi}^{-i*}$ denotes the policies of all agents
+except $i$, held fixed at their equilibrium values.
+\end{definition}
+
+In words, a Nash equilibrium is a joint policy from which no single
+agent has an incentive to deviate unilaterally. Nash's theorem
+guarantees that every finite game has at least one Nash equilibrium
+in mixed strategies, but equilibria need not be unique, and finding
+one is computationally hard in general ($\mathsf{PPAD}$-complete for
+two-player general-sum games).
+
+\begin{example}[Prisoner's Dilemma as a One-Step Markov Game]
+\label{ex:prisoners}
+Two agents simultaneously choose \textsc{Cooperate} ($C$) or
+\textsc{Defect} ($D$). Payoffs (row = Agent 1, column = Agent 2):
+\begin{center}
+\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+ & $C$ & $D$ \\
+\midrule
+$C$ & $(3,3)$ & $(0,5)$ \\
+$D$ & $(5,0)$ & $(1,1)$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+Agent 1 always prefers $D$ regardless of Agent 2's action: if Agent 2
+plays $C$, defecting yields $5 > 3$; if Agent 2 plays $D$, defecting
+yields $1 > 0$. The same logic applies to Agent 2. Therefore $(D, D)$
+is the unique Nash equilibrium, even though $(C, C)$ would give both
+agents a higher payoff of $3$. This tension between individual
+rationality and collective welfare is the hallmark of social
+dilemmas\index{social dilemma} and will reappear in
+Section~\ref{sec:communication}.
+\end{example}
+
+\subsection{Partial Observability and the Dec-POMDP}
+
+In practice, agents rarely observe the full global state. Each agent
+$i$ instead receives a local observation $o^i_t$ drawn from an
+observation function $O^i : \cS \to \Delta(\mathcal{O}^i)$. The
+resulting framework is a \textbf{decentralised partially observable
+MDP}\index{Dec-POMDP} (Dec-POMDP), which is $\mathsf{NEXP}$-hard to
+solve in the worst case. Much of practical MARL research focuses on
+restricting the setting\,---\,cooperative teams, shared observations
+at training time, or limited communication\,---\,to make the problem
+tractable.
+
+% ===========================================================
+\section{Cooperative MARL}
+\label{sec:cooperative}
+% ===========================================================
+
+\subsection{The Cooperative Setting}
+
+In fully cooperative MARL all agents share a single team reward
+$r_t = R(s_t, \bm{a}_t, s_{t+1})$. The joint objective is simply
+\begin{equation}
+\label{eq:cooperative-return}
+J(\boldsymbol{\pi}) = \E_{\boldsymbol{\pi}}\!\left[
+  \sum_{t=0}^{\infty} \gamma^t r_t \right].
+\end{equation}
+Despite the common objective, each agent must act on its own
+local observation and cannot, at execution time, communicate or
+observe the global state. This is the standard setting in
+multi-robot coordination, multi-player cooperative games (e.g.\
+StarCraft~II micromanagement), and multi-agent dialogue systems.
+
+\subsection{Centralised Training with Decentralised Execution}
+
+The most influential paradigm for cooperative MARL is
+\textbf{centralised training with decentralised
+execution}\index{centralised training with decentralised execution|textbf}
+(CTDE)\index{CTDE|see{centralised training with decentralised execution}}.
+During \emph{training}, a central critic or mixer has access to the
+global state $s_t$ and the actions of all agents. During
+\emph{execution}, each agent relies only on its local observation
+history $\tau^i = (o^i_0, a^i_0, \ldots, o^i_t)$. The training
+privilege allows the critic to give informative gradient signal; the
+execution constraint ensures the policy is deployable in settings
+where a central controller is unavailable.
+
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  box/.style={rectangle, draw, rounded corners, minimum width=2.0cm,
+              minimum height=0.6cm, font=\small, fill=gray!10, align=center},
+  mixer/.style={rectangle, draw, rounded corners, minimum width=2.4cm,
+               minimum height=0.7cm, font=\small, fill=blue!12, align=center},
+  envbox/.style={rectangle, draw, rounded corners, minimum width=2.4cm,
+               minimum height=0.7cm, font=\small, fill=green!8, align=center},
+  lossnode/.style={font=\small},
+  phase/.style={rectangle, draw, dashed, rounded corners,
+                inner sep=10pt},
+  arr/.style={->, >=Stealth, thick},
+  darr/.style={->, >=Stealth, dashed, gray}
+]
+
+%% ============ TRAINING PHASE ============
+
+\node[box] (q1) at (0,0) {$Q^1(\tau^1, a^1)$};
+\node[box] (q2) at (0,-1.2) {$Q^2(\tau^2, a^2)$};
+\node[font=\small] (qdots) at (0,-2.1) {$\vdots$};
+\node[box] (qN) at (0,-2.8) {$Q^N(\tau^N, a^N)$};
+
+\node[mixer] (mix) at (5.0,-1.2) {\textbf{Mixer} $Q_\mathrm{tot}(s,\bm{a})$};
+\node[font=\small] (glob) at (5.0,0.2) {global state $s$};
+\node[lossnode] (loss) at (7.8,-1.2) {$\mathcal{L}_\mathrm{TD}$};
+
+% Q^i -> Mixer: use explicit coordinates to guarantee entry into mixer
+\draw[arr] (q1.east) -- (mix.west |- q1.east) -- (mix.west);
+\draw[arr] (q2.east) -- (mix.west);
+\draw[arr] (qN.east) -- (mix.west |- qN.east) -- (mix.west);
+
+% Global state -> Mixer
+\draw[arr, dashed] (glob.south) -- (mix.north);
+
+% Mixer -> Loss
+\draw[arr] (mix.east) -- (loss.west);
+
+\node[phase, fit=(q1)(qN)(glob)(loss),
+      label={[font=\small\bfseries]above:Training (centralised)}] (trainbox) {};
+
+%% ============ EXECUTION PHASE ============
+
+\node[box] (e1) at (0,-5.2) {Policy $\pi^1(\tau^1)$};
+\node[box] (e2) at (0,-6.4) {Policy $\pi^2(\tau^2)$};
+\node[font=\small] (edots) at (0,-7.3) {$\vdots$};
+\node[box] (eN) at (0,-8.0) {Policy $\pi^N(\tau^N)$};
+
+\node[envbox] (env) at (5.0,-6.4) {Environment};
+
+% Policies -> Environment: same pattern
+\draw[arr] (e1.east) -- (env.west |- e1.east) -- (env.west);
+\draw[arr] (e2.east) -- (env.west);
+\draw[arr] (eN.east) -- (env.west |- eN.east) -- (env.west);
+
+\node[phase, fit=(e1)(eN)(env),
+      label={[font=\small\bfseries]above:Execution (decentralised)}] (execbox) {};
+
+%% ============ DASHED LINKS: Q-nets -> Policies ============
+\draw[darr] (q1.south) -- (e1.north);
+\draw[darr] (q2.south) -- (e2.north);
+\draw[darr] (qN.south) -- (eN.north);
+
+%% ============ VERTICAL DOTTED SEPARATOR ============
+\coordinate (septop) at (2.5, 0.9);
+\coordinate (sepbot) at (2.5,-8.7);
+\draw[dotted, thick, gray!60] (septop) -- (sepbot);
+
+\end{tikzpicture}
+\caption{The CTDE architecture. During training a \emph{mixer}
+  (e.g.\ QMIX) combines per-agent utility networks $Q^i$ into a
+  joint $Q_\mathrm{tot}$ using the global state, and gradients flow
+  back through all $Q^i$. At execution time the centralised mixer is
+  discarded; each agent acts greedily with respect to its own $Q^i$
+  using only its local observation history $\tau^i$.}
+\label{fig:ctde}
+\end{figure}
+% \begin{figure}[ht]
+% \centering
+% \begin{tikzpicture}[
+%   box/.style={rectangle, draw, rounded corners, minimum width=2.0cm,
+%               minimum height=0.6cm, font=\small, fill=gray!10, align=center},
+%   mixer/.style={rectangle, draw, rounded corners, minimum width=2.4cm,
+%                minimum height=0.7cm, font=\small, fill=blue!12, align=center},
+%   envbox/.style={rectangle, draw, rounded corners, minimum width=2.4cm,
+%                minimum height=0.7cm, font=\small, fill=green!8, align=center},
+%   lossnode/.style={font=\small},
+%   phase/.style={rectangle, draw, dashed, rounded corners,
+%                 inner sep=10pt},
+%   arr/.style={->, >=Stealth, thick},
+%   darr/.style={->, >=Stealth, dashed, gray}
+% ]
+
+% %% ============ TRAINING PHASE (top half) ============
+
+% % Per-agent Q-value networks (left column)
+% \node[box] (q1) at (0,0) {$Q^1(\tau^1, a^1)$};
+% \node[box] (q2) at (0,-1.0) {$Q^2(\tau^2, a^2)$};
+% \node[font=\small] (qdots) at (0,-1.7) {$\vdots$};
+% \node[box] (qN) at (0,-2.3) {$Q^N(\tau^N, a^N)$};
+
+% % Mixer (right of Q-column, vertically centred)
+% \node[mixer] (mix) at (4.5,-1.0) {\textbf{Mixer} $Q_\mathrm{tot}(s,\bm{a})$};
+% \node[font=\small] (glob) at (4.5,0) {global state $s$};
+
+% % Loss (right of mixer)
+% \node[lossnode] (loss) at (7.2,-1.0) {$\mathcal{L}_\mathrm{TD}$};
+
+% % Arrows: Q^i -> Mixer (horizontal, no crossings)
+% \draw[arr] (q1.east) -- (q1.east -| mix.west);
+% \draw[arr] (q2.east) -- (mix.west);
+% \draw[arr] (qN.east) -- (qN.east -| mix.west);
+% \draw[arr, dashed] (glob) -- (mix);
+
+% % Mixer -> Loss
+% \draw[arr] (mix.east) -- (loss.west);
+
+% % Training bounding box
+% \node[phase, fit=(q1)(qN)(glob)(loss),
+%       label={[font=\small\bfseries]above:Training (centralised)}] (trainbox) {};
+
+% %% ============ EXECUTION PHASE (bottom half) ============
+
+% % Per-agent policies (left column, well below training)
+% \node[box] (e1) at (0,-4.8) {Policy $\pi^1(\tau^1)$};
+% \node[box] (e2) at (0,-5.8) {Policy $\pi^2(\tau^2)$};
+% \node[font=\small] (edots) at (0,-6.5) {$\vdots$};
+% \node[box] (eN) at (0,-7.1) {Policy $\pi^N(\tau^N)$};
+
+% % Environment (right of policy column, vertically centred)
+% \node[envbox] (env) at (4.5,-5.8) {Environment};
+
+% % Arrows: policies -> environment (horizontal, no crossings)
+% \draw[arr] (e1.east) -- (e1.east -| env.west);
+% \draw[arr] (e2.east) -- (env.west);
+% \draw[arr] (eN.east) -- (eN.east -| env.west);
+
+% % Execution bounding box
+% \node[phase, fit=(e1)(eN)(env),
+%       label={[font=\small\bfseries]above:Execution (decentralised)}] (execbox) {};
+
+% %% ============ DASHED LINKS: Q-nets -> Policies ============
+% \draw[darr] (q1.south) -- (e1.north);
+% \draw[darr] (q2.south) -- (e2.north);
+% \draw[darr] (qN.south) -- (eN.north);
+
+% %% ============ VERTICAL DOTTED SEPARATOR ============
+% \coordinate (septop) at ($(q1.north east)!0.5!(q1.north east -| mix.north west) + (0, 0.6)$);
+% \coordinate (sepbot) at ($(eN.south east)!0.5!(eN.south east -| env.south west) + (0, -0.6)$);
+% \draw[dotted, thick, gray!60] (septop) -- (sepbot);
+
+% \end{tikzpicture}
+% \caption{The CTDE architecture. During training a \emph{mixer}
+%   (e.g.\ QMIX) combines per-agent utility networks $Q^i$ into a
+%   joint $Q_\mathrm{tot}$ using the global state, and gradients flow
+%   back through all $Q^i$. At execution time the centralised mixer is
+%   discarded; each agent acts greedily with respect to its own $Q^i$
+%   using only its local observation history $\tau^i$.}
+% \label{fig:ctde}
+% \end{figure}
+
+\subsection{QMIX}
+
+\textbf{QMIX}\index{QMIX|textbf} (Rashid et al., 2018) is the
+canonical CTDE algorithm for cooperative value-based MARL. Each
+agent $i$ maintains a per-agent utility network
+$Q^i_\theta(\tau^i, a^i)$ that conditions only on the local
+observation history. A central \emph{mixer network} combines these
+utilities into a joint action-value function:
+\begin{equation}
+\label{eq:qmix}
+Q_\mathrm{tot}(s, \bm{a}) = f_\phi\!\bigl(Q^1(\tau^1, a^1), \ldots,
+  Q^N(\tau^N, a^N),\; s\bigr).
+\end{equation}
+The mixer uses hypernetworks\index{hypernetwork} conditioned on the
+global state $s$ to produce non-negative weights, which ensures
+the \textbf{monotonicity constraint}\index{QMIX!monotonicity}:
+\[
+  \frac{\partial Q_\mathrm{tot}}{\partial Q^i} \geq 0
+  \quad \text{for all } i.
+\]
+This constraint is the key insight. It guarantees the
+\textbf{Individual-Global-Max}\index{IGM condition} (IGM) property:
+\[
+  \argmax_{\bm{a}}\, Q_\mathrm{tot}(s, \bm{a})
+  \;=\; \bigl(\argmax_{a^1} Q^1(\tau^1, a^1),\; \ldots,\;
+               \argmax_{a^N} Q^N(\tau^N, a^N)\bigr).
+\]
+Maximising $Q_\mathrm{tot}$ is therefore equivalent to each agent
+greedily choosing its own best action\,---\,no joint-action search
+is needed at execution time. The whole system is trained end-to-end
+with a standard TD loss:
+\begin{equation}
+\label{eq:qmix-loss}
+\mathcal{L}(\theta, \phi) = \E\!\left[
+  \bigl(r + \gamma\, \max_{\bm{a}'} Q_\mathrm{tot}(s', \bm{a}')
+  - Q_\mathrm{tot}(s, \bm{a})\bigr)^2
+\right].
+\end{equation}
+QMIX achieves state-of-the-art performance on the StarCraft
+Multi-Agent Challenge (SMAC)\index{SMAC} benchmark, a suite of
+cooperative micromanagement tasks in StarCraft~II.
+
+\subsection{MAPPO}
+
+While QMIX operates in the value-function paradigm, many cooperative
+tasks benefit from policy-gradient methods because they handle
+continuous actions naturally and are easier to tune. \textbf{MAPPO}
+\index{MAPPO|textbf} (Yu et al., 2022) applies Proximal Policy
+Optimisation (PPO; Chapter~\ref{ch:pg}) in the CTDE framework.
+Each agent $i$ maintains a separate actor $\pi^i_\theta(\cdot \mid
+\tau^i)$ conditioned on its local observation history. A \emph{shared
+centralised critic} $V_\phi(s)$ conditions on the global state and
+produces a baseline for variance reduction:
+\begin{equation}
+\label{eq:mappo-objective}
+\mathcal{L}_\mathrm{MAPPO}(\theta^i) =
+\E\!\left[\min\!\bigl(r^i_t(\theta^i)\,\hat{A}_t,\;
+  \mathrm{clip}(r^i_t(\theta^i), 1-\epsilon, 1+\epsilon)\,\hat{A}_t
+\bigr)\right],
+\end{equation}
+where $r^i_t(\theta^i) = \pi^i_\theta(a^i_t \mid \tau^i_t) /
+\pi^i_{\mathrm{old}}(a^i_t \mid \tau^i_t)$ is the probability ratio
+and $\hat{A}_t$ is the advantage estimated by the centralised critic.
+A key practical finding is that \emph{parameter sharing}\index{parameter
+sharing}\,---\,initialising all agents from the same actor network
+while conditioning on an agent-index feature\,---\,drastically
+improves sample efficiency by letting agents share gradients.
+
+\begin{remark}[Parameter Sharing vs.\ Heterogeneous Agents]
+Parameter sharing is powerful when agents play symmetric roles, but
+can be inappropriate for teams of heterogeneous specialists (e.g.\ a
+healer and a tank in a game). In that setting, separate networks with
+a shared feature extractor often work best.
+\end{remark}
+
+% ===========================================================
+\section{Competitive and Mixed Settings}
+\label{sec:competitive}
+% ===========================================================
+
+\subsection{Zero-Sum Games and Self-Play}
+
+In a two-player zero-sum game, $R^1 = -R^2$, so one agent's gain is
+exactly the other's loss. The Nash equilibrium of a zero-sum Markov
+game corresponds to the minimax policy: agent 1 maximises while agent
+2 minimises the same cumulative reward. Formally, the minimax value
+$v^*$ satisfies
+\[
+  v^* = \max_{\pi^1} \min_{\pi^2}\; J^1(\pi^1, \pi^2)
+       = \min_{\pi^2} \max_{\pi^1}\; J^1(\pi^1, \pi^2),
+\]
+where the equality (von Neumann's minimax theorem)\index{minimax theorem}
+holds when policies are allowed to be mixed (stochastic).
+
+Training an agent to play optimally in a zero-sum game faces an
+immediate bootstrapping problem: to learn to defeat strong opponents,
+the agent needs strong opponents to learn against. \textbf{Self-play}
+\index{self-play|textbf} resolves this by having the agent play against
+past versions of itself. A canonical training loop is:
+\begin{enumerate}[leftmargin=*]
+  \item Maintain a population (or a single snapshot) of past policy
+    checkpoints.
+  \item Sample an opponent from the population.
+  \item Collect rollouts; update the current policy against this
+    opponent.
+  \item Add the current policy to the population periodically.
+\end{enumerate}
+Self-play guarantees that the opponent distribution is always at a
+difficulty level commensurate with the current policy, providing a
+natural curriculum.
+
+\subsection{AlphaGo and AlphaZero}
+
+The most famous application of self-play is the AlphaGo and
+AlphaZero\index{AlphaZero|textbf} programme (Silver et al., 2016;
+2017). Go\index{Go (game)} had long resisted AI solutions because its
+game tree has a branching factor of about $250$ and depths exceeding
+$200$, making exhaustive search infeasible.
+
+AlphaGo combined three components: (1) a value network $v_\theta(s)$
+trained by regression on self-play outcomes; (2) a policy network
+$\pi_\theta(a \mid s)$ trained by supervised learning on human games
+and then refined by RL policy gradient; and (3) Monte Carlo Tree
+Search (MCTS)\index{MCTS} that uses both networks to guide rollouts.
+At each MCTS node, the selection step balances exploration and
+exploitation via the PUCT criterion\index{PUCT}:
+\begin{equation}
+\label{eq:puct}
+a^* = \argmax_{a}\!\left[
+  Q(s, a) + c_\mathrm{puct}\, \pi_\theta(a \mid s)
+  \frac{\sqrt{N(s)}}{1 + N(s, a)}
+\right],
+\end{equation}
+where $Q(s,a)$ is the empirical mean value from past rollouts,
+$N(s)$ is the visit count of node $s$, and $N(s,a)$ is the count
+of edge $(s,a)$.
+
+AlphaZero\index{AlphaZero} stripped away the supervised learning
+bootstrap: starting from \emph{random play}, self-play plus MCTS
+alone was sufficient to reach superhuman performance in Go, Chess,
+and Shogi within days of training. The success of AlphaZero
+demonstrated that given a perfect simulator, self-play can discover
+expert strategies entirely from scratch\,---\,a landmark result for
+both AI and MARL.
+
+\subsection{Competitive Training Instability and Non-Transitive Strategies}
+
+Naive self-play is not without pathologies. In games with
+\textbf{non-transitive strategy
+relationships}\index{non-transitive strategies}\,---\,where strategy
+$A$ beats $B$, $B$ beats $C$, but $C$ beats $A$ (a rock-paper-scissors
+dynamic)\,---\,self-play can cycle indefinitely rather than converging
+to a Nash equilibrium. The policy trained against version $k$ of itself
+may be strong against $k$ but brittle against version $k-5$, a problem
+known as \textbf{forgetting}\index{forgetting!in self-play} or
+strategic collapse.
+
+Two remedies are widely used. \textbf{Fictitious
+self-play}\index{fictitious self-play} trains the agent against the
+\emph{average} of all past opponent policies rather than just the most
+recent checkpoint. In two-player zero-sum games with finite action
+spaces, fictitious self-play converges to the Nash equilibrium.
+\textbf{Population-based training}\index{population-based training}
+(PBT; Jaderberg et al., 2017) maintains a diverse league of agents with
+different strategies; each agent in the population is trained against
+a mixture of others, preventing any single dominant strategy from
+eliminating diversity.
+
+% ===========================================================
+\section{Communication and Emergent Behaviour}
+\label{sec:communication}
+% ===========================================================
+
+\subsection{Learned Communication Protocols}
+
+When agents can exchange messages before or during task execution,
+the team's effective policy space expands dramatically. But what
+should they say? Hard-coding a communication protocol requires
+domain expertise and scales poorly. A more principled approach is
+to treat messages as \emph{continuous actions} and let communication
+protocols emerge through end-to-end training.
+
+\textbf{CommNet}\index{CommNet|textbf} (Sukhbaatar et al., 2016)
+is one of the earliest architectures for differentiable multi-agent
+communication. At each timestep each agent $i$ broadcasts a
+continuous vector $m^i_t \in \R^d$; the aggregated message
+$\bar{m}^i_t = \frac{1}{N-1}\sum_{j \neq i} m^j_t$ is concatenated
+with the agent's observation and fed to an LSTM\index{LSTM}, whose
+output drives both the next action and the next message:
+\[
+  (a^i_t, m^i_{t+1}) = f_\theta\!\bigl(h^i_t, o^i_t, \bar{m}^i_t\bigr).
+\]
+Because the communication channel is differentiable, the whole
+system is trained end-to-end with standard backpropagation through
+time. CommNet demonstrated that agents could spontaneously learn to
+coordinate on cooperative tasks (e.g.\ traffic junction routing)
+without any supervision on the communication content.
+
+\textbf{TarMAC}\index{TarMAC|textbf} (Das et al., 2019) extended
+CommNet by introducing \emph{targeted communication}: each agent
+produces a key $k^i$ and a value $v^i$, and the aggregated message
+received by agent $j$ is an attention-weighted sum
+\[
+  m^j = \sum_{i \neq j} \sigma(k^i \cdot q^j)\, v^i,
+\]
+where $q^j$ is agent $j$'s query vector. The attention mechanism
+allows agents to selectively read the messages most relevant to their
+current situation, improving both performance and the
+interpretability of the learned communication.
+
+\subsection{Emergent Communication}
+
+A striking finding in the emergent-communication literature is that
+agents can develop \emph{compositional languages}\index{emergent
+language!compositionality}: short discrete symbols whose combinations
+encode structured meanings. In referential games\index{referential game}
+(e.g.\ one agent sees an object and must describe it; another agent
+must identify it from distractors), trained agents frequently develop
+vocabularies in which different symbols correspond to different object
+attributes, and novel combinations of symbols denote novel objects.
+These findings parallel the study of language evolution and raise the
+question of whether artificial emergent languages could bootstrap
+useful communication skills for real-world agents.
+
+\subsection{Social Dilemmas in Multi-Agent Learning}
+
+The Prisoner's Dilemma of Example~\ref{ex:prisoners} is a one-shot
+game. In \emph{repeated} games, cooperation can emerge spontaneously
+because agents have the ability to \emph{punish} defectors in future
+rounds. Axelrod's famous tournaments showed that the simple
+\textsc{Tit-for-Tat} strategy\index{Tit-for-Tat} (cooperate
+initially; on each subsequent round, copy the opponent's last action)
+outperforms complex strategies in repeated Prisoner's Dilemmas.
+
+In MARL, social dilemmas\index{social dilemma} are formalised as
+environments where the Nash equilibrium is Pareto suboptimal: rational
+individual behaviour leads to collectively poor outcomes. The
+sequential social dilemma (SSD)\index{sequential social dilemma}
+framework (Leibo et al., 2017) embeds such dilemmas in spatial
+environments. For example, in the \emph{Gathering} game, two agents
+collect apples and can fire ``fining beams'' to temporarily disable
+each other. Mutual fining wastes time, but each agent is individually
+incentivised to fire first. RL agents trained with independent
+learning converge to mutual defection; agents trained with prosocial
+reward shaping or explicit communication learn to cooperate.
+
+% ===========================================================
+\section{Multi-Agent RL for LLMs}
+\label{sec:marl-llms}
+% ===========================================================
+
+The preceding sections treated agents as neural networks that map
+observations to actions in an environment with clear state and reward
+signals. Large language models (LLMs)\index{large language model}
+introduce a qualitatively new kind of agent: one that operates in the
+space of natural language, can reason through intermediate steps, and
+can delegate sub-tasks to other LLM instances. MARL concepts apply
+naturally, and a growing body of work exploits them to improve
+reasoning quality, code generation, and task completion.
+
+\subsection{Debate}
+
+\textbf{AI Debate}\index{debate (MARL)} (Irving et al., 2018) is a
+multi-agent protocol for producing trustworthy outputs from a
+powerful AI system. Two language model agents argue opposite sides of
+a proposition; a third agent (or a human judge) evaluates the
+exchange and declares a winner. The key theoretical claim is that,
+for a sufficiently capable judge, the optimal strategy for each debater
+is to \emph{tell the truth}: a lie can always be exposed by the
+opponent, so the best policy in a debate equilibrium is honest argument.
+
+In practice, debate-style protocols are implemented as a two-LLM
+pipeline:
+\begin{enumerate}[leftmargin=*]
+  \item A \textbf{proposer} LLM generates a claim or answer.
+  \item A \textbf{critic} LLM, given the same prompt and the
+    proposer's output, generates a counter-argument.
+  \item A \textbf{judge} LLM (or the same model with a judge prompt)
+    scores both positions and selects the better answer.
+\end{enumerate}
+The judge's score can be used as a reward signal to fine-tune both
+the proposer and critic via RL (Section~\ref{sec:rlvr} in
+Chapter~\ref{ch:reasoning}). This enables \emph{scalable oversight}:
+the system can improve beyond the judge's direct capability,
+because it is easier for the judge to evaluate an argument than
+to generate the correct answer from scratch.
+
+\subsection{Multi-Agent Code Generation}
+
+Code generation is a natural setting for multi-agent LLMs because
+code admits automatic, verifiable rewards (test suites), and because
+the task decomposes into sub-tasks (specification, implementation,
+testing, documentation) that are easy to assign to specialised agents.
+
+A representative pipeline (Chen et al., 2023; Du et al., 2023) works
+as follows:
+\begin{enumerate}[leftmargin=*]
+  \item A \textbf{planner} agent decomposes the user request into a
+    sequence of subtasks.
+  \item Multiple \textbf{coder} agents independently generate
+    candidate implementations of each subtask.
+  \item A \textbf{verifier} agent runs test suites on each candidate
+    and returns pass/fail feedback.
+  \item A \textbf{ranker} agent, trained with preference RL, selects
+    the best-ranked implementation and optionally patches failures.
+\end{enumerate}
+Empirically, diverse proposals from multiple independent coders
+consistently outperform any single coder, even when the individual
+coders are identical models: diversity in random seeds, prompts, or
+temperature settings introduces sufficient variation for the verifier
+to identify genuinely better solutions.
+
+\subsection{LLM Agents Cooperating on Tasks}
+
+Beyond code, multi-agent LLM frameworks have been applied to research
+assistance, game playing, and software engineering. \textbf{ChatDev}
+(Qian et al., 2023) structures a software team as a set of LLM agents
+playing different roles (CEO, CTO, programmer, tester, document writer)
+who communicate via a moderated chat channel to complete a software
+project end-to-end. Each role is defined by a system prompt and
+a role-specific history; the moderation protocol enforces turn-taking
+and task focus.
+
+\textbf{AutoGen}\index{AutoGen} (Wu et al., 2023) provides a more
+flexible framework: any LLM can be wrapped as an \emph{agent} with a
+name, system prompt, and optionally a tool-use interface. Agents
+communicate by passing messages in a shared thread; a human-proxy
+agent can inject user feedback. The framework supports loops, branching
+conversations, and nested agent groups, enabling both cooperative and
+adversarial patterns.
+
+\subsection{Agentic Workflows with Specialised Agents}
+
+The most practically influential multi-agent LLM pattern at the time
+of writing is the \textbf{orchestrator\,---\,specialist} pattern.
+A powerful generalist LLM (the \emph{orchestrator}) receives a complex
+user task, decomposes it into subtasks, and dispatches each subtask to
+a \emph{specialist} agent optimised for that specific skill:
+\begin{description}[leftmargin=!, labelwidth=3.5cm]
+  \item[Web search agent] retrieves and summarises live information.
+  \item[Code agent] writes and executes code in a sandboxed
+    interpreter.
+  \item[Memory agent] maintains a persistent key-value store of facts
+    extracted from prior turns.
+  \item[Critic agent] reviews the orchestrator's plan and flags
+    inconsistencies before execution.
+\end{description}
+Rewards for RL fine-tuning of the orchestrator can come from
+end-to-end task completion (e.g.\ does the final answer match a
+ground-truth solution?) or from intermediate sub-goals validated by
+the specialist agents. This closed loop between orchestration and
+specialist execution mirrors the CTDE paradigm: the orchestrator
+acts as a centralised planner during training, while each specialist
+executes its local policy independently.
+
+The connection to MARL is direct. Each specialist is a policy
+$\pi^i$; the orchestrator defines a task distribution over joint
+action sequences; and the emergent behaviour of the ensemble is a
+trajectory in the space of all possible multi-agent interactions.
+Formally training this system with MARL objectives\,---\,rather than
+fine-tuning each component in isolation\,---\,is an active research
+frontier.
+
+% ===========================================================
+\section{Challenges in Multi-Agent RL}
+\label{sec:marl-challenges}
+% ===========================================================
+
+\subsection{Non-Stationarity}
+
+The most fundamental challenge of MARL is that each agent's
+environment includes all other agents, which are themselves
+learning. From agent $i$'s perspective, the transition law and
+reward function are \emph{non-stationary}\index{non-stationarity!in MARL|textbf}:
+the world it experiences today is different from the world it will
+experience tomorrow, because its teammates or opponents have updated
+their policies. This violates the stationarity assumption that
+underpins convergence proofs for Q-learning and other single-agent
+algorithms.
+
+Formally, agent $i$ observes an effective transition law
+\[
+  \tilde{\cT}^i(s' \mid s, a^i)
+  = \sum_{\bm{a}^{-i}} \cT(s' \mid s, a^i, \bm{a}^{-i})
+    \prod_{j \neq i} \pi^j(a^j \mid s),
+\]
+which changes whenever any $\pi^j$ ($j \neq i$) changes. Independent
+Q-learning\index{independent Q-learning} ignores this non-stationarity
+and often fails to converge in practice, especially in competitive
+settings. Algorithms such as QMIX and MAPPO partially mitigate
+non-stationarity by sharing gradient information across agents, but
+convergence guarantees remain weak for the general case.
+
+\subsection{Credit Assignment in Teams}
+
+Even with a shared reward signal, team credit assignment is
+hard\index{credit assignment!in MARL}: if the team succeeds, which
+agent's action was responsible? Naive approaches attribute all reward
+to all agents equally, which provides noisy gradients and discourages
+specialisation. The \textbf{difference reward}\index{difference reward}
+heuristic assigns agent $i$ the credit
+\[
+  d^i_t = r_t - r_t^{-i},
+\]
+where $r_t^{-i}$ is the reward that \emph{would have been} obtained
+had agent $i$ acted with some default or counterfactual action,
+holding other agents fixed. Computing $r_t^{-i}$ requires either a
+learned world model or additional rollouts, making it expensive.
+QMIX's monotonicity constraint provides an implicit credit assignment
+mechanism: the gradient of $Q_\mathrm{tot}$ with respect to $Q^i$
+tells agent $i$ how much its utility function contributes to the team.
+
+\subsection{Scalability}
+
+The joint action space $|\cA| = \prod_i |\cA^i|$ grows exponentially
+in the number of agents. For $N = 10$ agents each with $|\cA^i| = 5$
+actions, the joint space has $5^{10} \approx 10^7$ elements. Even
+representing $Q_\mathrm{tot}(s, \bm{a})$ as a table is infeasible;
+the CTDE factorisation of QMIX addresses this by writing
+$Q_\mathrm{tot}$ as a function of per-agent utilities, reducing
+complexity from exponential to linear in $N$.
+
+Policy-gradient methods scale better because they operate on
+marginal policies $\pi^i(a^i \mid \tau^i)$ rather than on the joint
+policy. With parameter sharing, the same network services all agents,
+so the parameter count does not grow with $N$. Nevertheless,
+training time still scales with the number of agents because more
+rollout data is needed, and inter-agent dependencies require larger
+replay buffers and mini-batches.
+
+\subsection{Reward Shaping for Cooperation}
+
+In mixed-motive games, agents may have individually rational
+incentives that conflict with team performance. Reward shaping
+\index{reward shaping!in MARL}\,---\,augmenting the true reward
+with a potential-based bonus\,---\,can nudge agents toward
+cooperative behaviour without invalidating the Nash equilibrium.
+However, shaping rewards poorly can introduce spurious equilibria
+or make agents indifferent to the true objective.
+
+\textbf{Intrinsic social motivation}\index{intrinsic motivation!social}
+is a promising alternative: agents are given an intrinsic reward
+for \emph{influencing} the behaviour of others (Social Influence
+reward; Jaques et al., 2019) or for achieving causal empowerment
+over the environment. These intrinsic rewards encourage information
+sharing without requiring hand-crafted communication protocols.
+
+\subsection{Sample Efficiency}
+
+MARL is sample-hungry. Not only must each agent explore its own
+action space, but the joint exploration problem is exponentially
+larger. Coordinated exploration\,---\,where agents actively
+avoid redundant exploration of the same state regions\,---\,reduces
+redundancy but requires additional coordination overhead. Offline
+MARL\index{offline MARL}, which learns from pre-collected datasets
+without online interaction, is an emerging approach that transfers
+recent successes of offline single-agent RL
+(Chapter~\ref{ch:open}) to the multi-agent setting.
+
+The table below summarises the main algorithmic families,
+their settings, and key properties.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lllll@{}}
+\toprule
+\textbf{Algorithm} & \textbf{Setting} & \textbf{Paradigm}
+  & \textbf{Action space} & \textbf{Key idea} \\
+\midrule
+IQL & Coop./Comp. & Decentralised & Discrete & Independent Q-learning \\
+QMIX & Cooperative & CTDE & Discrete & Monotonic mixer \\
+QPLEX & Cooperative & CTDE & Discrete & Duplex attention mixer \\
+MAPPO & Cooperative & CTDE & Cont./Disc. & Shared centralised critic \\
+MADDPG & Mixed & CTDE & Continuous & Per-agent centralised critic \\
+AlphaZero & Competitive & Self-play & Discrete & MCTS + policy/value nets \\
+PSRO & Mixed & Population & Discrete & Nash resp.\ oracle + mixture \\
+CommNet & Cooperative & Comm.\ channel & Continuous & Mean-field messages \\
+TarMAC & Cooperative & Comm.\ channel & Continuous & Targeted attention msgs \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ===========================================================
+\section{Summary}
+\label{sec:marl-summary}
+% ===========================================================
+
+Multi-agent reinforcement learning extends the single-agent MDP
+framework to $N$ interacting agents, each with its own policy,
+observation, and reward. The central solution concept is Nash
+equilibrium: a joint policy from which no agent can profitably
+deviate unilaterally. Finding Nash equilibria is hard in general,
+but structure in the game\,---\,cooperation, zero-sum competition,
+factored dynamics\,---\,enables tractable algorithms.
+
+For cooperative tasks, the CTDE paradigm achieves the best of
+both worlds: centralised gradient information at training time,
+and fully decentralised execution. QMIX exploits monotonic
+factorisation to make greedy per-agent action selection globally
+optimal. MAPPO applies PPO with a centralised value baseline and
+parameter sharing, scaling to large teams with continuous actions.
+
+In competitive settings, self-play provides an automatic curriculum.
+AlphaZero shows that starting from random play and iterating
+self-play with MCTS is sufficient for superhuman performance in
+perfect-information games. Non-transitivity and strategic forgetting
+motivate population-based methods that maintain policy diversity.
+
+Communication opens an additional channel for cooperation.
+CommNet and TarMAC demonstrate that end-to-end training can
+produce effective messaging protocols without any supervision
+on the message content. In social dilemmas, where the Nash
+equilibrium is Pareto suboptimal, repeated interaction and
+prosocial rewards can sustain cooperative behaviour.
+
+LLMs are the latest and perhaps most impactful arena for MARL
+ideas. Debate, multi-agent code generation, orchestrator-specialist
+pipelines, and frameworks like AutoGen and ChatDev all instantiate
+multi-agent dynamics in language. Applying formal MARL training
+objectives to these systems\,---\,rather than fine-tuning components
+in isolation\,---\,is one of the most exciting open directions at
+the frontier of RL research.
+
+The key challenges\,---\,non-stationarity, credit assignment,
+scalability, reward shaping, and sample efficiency\,---\,are
+interrelated and none is fully solved. Progress on each will likely
+require new theory as well as new engineering, making MARL one of
+the most active and consequential subfields of machine learning.
+
+% ===========================================================
+\section*{Exercises}
+\addcontentsline{toc}{section}{Exercises}
+% ===========================================================
+
+\begin{exercise}
+\label{ex:markov-game-reduction}
+Show that a Markov game with $N=1$ reduces to a standard MDP.
+Then show that if all agents share the same reward $R^1 = \cdots =
+R^N$ and all agents act identically (i.e.\ $\pi^1 = \cdots = \pi^N$),
+the joint return Equation~\eqref{eq:cooperative-return} equals the
+single-agent return of Chapter~\ref{ch:mdp}. What additional
+conditions are needed for the shared-reward policy-gradient to equal
+the single-agent policy-gradient?
+\end{exercise}
+
+\begin{exercise}
+\label{ex:nash-prisoners}
+Consider the Prisoner's Dilemma of Example~\ref{ex:prisoners}.
+\begin{enumerate}[label=(\alph*)]
+  \item Verify that $(D, D)$ is a Nash equilibrium by checking the
+    definition: no player can improve their payoff by unilaterally
+    switching to $C$.
+  \item Show that $(C, C)$ is \emph{not} a Nash equilibrium.
+  \item Now suppose the game is played for $T = 100$ rounds and
+    agents maximise total undiscounted reward. Is it a Nash
+    equilibrium for both agents to always cooperate? Justify.
+  \item What changes if the horizon is infinite with discount
+    $\gamma = 0.9$?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:igm-proof}
+The IGM property states that
+$\argmax_{\bm{a}} Q_\mathrm{tot}(s, \bm{a}) = \bigl(\argmax_{a^1}
+Q^1(\tau^1, a^1),\, \ldots,\, \argmax_{a^N} Q^N(\tau^N,
+a^N)\bigr)$.
+\begin{enumerate}[label=(\alph*)]
+  \item Suppose $Q_\mathrm{tot}(s, \bm{a}) = \sum_i Q^i(\tau^i,
+    a^i)$. Prove that the IGM property holds.
+  \item Does the IGM property hold if
+    $Q_\mathrm{tot}(s, \bm{a}) = \prod_i Q^i(\tau^i, a^i)$ and
+    all $Q^i > 0$? Prove or give a counterexample.
+  \item Explain in one paragraph why QMIX's non-negative mixing
+    weights (from its hypernetwork) are sufficient but not necessary
+    for IGM.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:self-play-rps}
+Consider a three-strategy game with pure strategies Rock (R), Paper
+(P), Scissors (S) and payoff matrix
+\[
+M = \begin{pmatrix} 0 & -1 & 1 \\ 1 & 0 & -1 \\ -1 & 1 & 0
+\end{pmatrix}
+\]
+where $M_{ij}$ is the payoff to the row player when they play
+strategy $i$ against column player strategy $j$.
+\begin{enumerate}[label=(\alph*)]
+  \item Find the unique Nash equilibrium of this game.
+  \item Simulate $1{,}000$ steps of gradient ascent on $\pi^1$ while
+    $\pi^2$ is fixed at the Nash equilibrium. Does $\pi^1$ converge?
+  \item Now simulate $1{,}000$ steps of simultaneous gradient ascent
+    for both players. Describe the trajectory in the space of mixed
+    strategies. Does it converge to the Nash equilibrium?
+  \item Explain intuitively why this game causes naive self-play to
+    cycle.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:credit-assignment}
+A cooperative team of $N = 4$ robots earns a shared reward of $r =
+10$ when all four reach a goal simultaneously, and $r = 0$ otherwise.
+After a successful episode, independent Q-learning assigns equal
+credit $10/4 = 2.5$ to each agent.
+\begin{enumerate}[label=(\alph*)]
+  \item Suppose Robot 3 had a $0.5$ chance of reaching the goal
+    regardless of its action. Describe how equal credit assignment
+    distorts the learning signal for Robots 1, 2, and 4.
+  \item Define a difference reward for Robot $i$ using a counterfactual
+    where Robot $i$ stays put while others follow the observed policy.
+    Compute this reward for Robot 3.
+  \item What is the advantage of the difference reward over equal
+    credit? What is its main computational drawback?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:ctde-communication}
+Design a CTDE algorithm for a team of $N$ drones surveying a
+search-and-rescue area. Each drone observes a $5 \times 5$ local
+grid; the global map is $50 \times 50$. Agents cannot communicate
+at test time.
+\begin{enumerate}[label=(\alph*)]
+  \item Specify the observation space $\mathcal{O}^i$, action space
+    $\mathcal{A}^i$, and a suitable team reward function $R$.
+  \item Propose a centralised critic architecture that uses the
+    full $50 \times 50$ map during training. What features would
+    you concatenate alongside the global state?
+  \item Argue whether parameter sharing is appropriate here, and
+    how you would condition each agent's actor on its unique
+    identifier.
+  \item Identify two ways in which training instability might arise
+    and suggest mitigations.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:debate-reward}
+Implement a simplified debate protocol for a closed-book
+question-answering task.
+\begin{enumerate}[label=(\alph*)]
+  \item Define the state, action, and reward for each of the
+    proposer, critic, and judge agents in a single-round debate.
+  \item Let the judge assign a binary reward $r \in \{0, 1\}$
+    (correct / incorrect). Write the REINFORCE policy gradient
+    update for the proposer, assuming the critic's policy is
+    fixed. Is the variance of this estimator likely to be high?
+    Why?
+  \item Propose a baseline for the proposer that reduces variance
+    without introducing bias. Describe concretely how you would
+    estimate it.
+  \item Under what conditions does the debate equilibrium guarantee
+    truthful behaviour from the proposer? State the necessary
+    assumptions on the judge's capability.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:emergent-language}
+In a referential game, a speaker agent observes an image drawn from
+a set of $K$ objects and must produce a discrete message
+$m \in \{1, \ldots, V\}^L$ (vocabulary size $V$, message length $L$).
+A listener observes $m$ and must identify the correct object from $K$
+distractors.
+\begin{enumerate}[label=(\alph*)]
+  \item What is the maximum number of distinct objects that can be
+    encoded by a language with vocabulary $V$ and length $L$?
+  \item Suppose both agents are trained end-to-end with REINFORCE
+    and the reward is $+1$ for correct identification, $0$ otherwise.
+    Write the joint policy gradient update.
+  \item Describe one metric for measuring the compositionality of
+    the emergent language (e.g.\ topographic similarity). Define it
+    formally.
+  \item Why might the emergent language fail to be compositional
+    even when compositionality would be useful?
+\end{enumerate}
+\end{exercise}

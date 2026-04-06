@@ -1,0 +1,572 @@
+% ===========================================================
+% Chapter 17: Open Problems and Emerging Directions
+% Part IV: Frontiers
+% ===========================================================
+
+\chapter{Open Problems and Emerging Directions}
+\label{ch:open}
+
+\begin{quote}
+\itshape
+The best way to predict the future is to invent it.
+\par\medskip
+\upshape\raggedleft
+---\,Alan Kay
+\end{quote}
+
+\bigskip
+
+The preceding chapters have traced reinforcement learning from
+multi-armed bandits (Chapter~\ref{ch:bandits}) through dynamic
+programming (Chapter~\ref{ch:dp}), temporal-difference methods
+(Chapter~\ref{ch:td}), deep value-function approximation
+(Chapter~\ref{ch:value-approx}), policy gradients and actor-critic
+algorithms (Chapters~\ref{ch:pg}--\ref{ch:actor-critic}), and onward
+to the modern intersection of RL with large language models
+(Chapters~\ref{ch:lm-post-training}--\ref{ch:agents}).  Along the
+way we have seen RL solve games, align language models with human
+preferences, enable complex reasoning, and coordinate multi-agent
+systems.
+
+Yet for every problem RL has solved, a dozen remain open.  Some are
+long-standing\,---\,sample efficiency has been a concern since the
+earliest tabular algorithms\,---\,while others have emerged only
+recently, driven by the rapid adoption of RL as a post-training
+method for foundation models.  This final chapter surveys the most
+important open questions, groups them into coherent themes, and
+attempts to sketch the road ahead.  It is necessarily more speculative
+than the chapters that precede it: the goal is not to derive theorems
+but to orient the reader toward the problems that will shape the next
+decade of research.
+
+
+% ===========================================================
+\section{Sample Efficiency}
+\label{sec:open-sample}
+% ===========================================================
+
+\index{sample efficiency}
+Reinforcement learning is notoriously data-hungry.  Model-free
+algorithms such as PPO (Chapter~\ref{ch:actor-critic})
+and DQN (Chapter~\ref{ch:value-approx}) often require millions or
+even billions of environment interactions to learn behaviours that a
+human child acquires in minutes.  The gap between human and machine
+sample efficiency is one of the oldest open problems in the field, and
+it remains one of the most consequential.
+
+\subsection{Model-Based RL and World Models}
+\index{model-based reinforcement learning}
+\index{world model}
+
+The most natural route to sample efficiency is to \emph{learn a model
+of the environment} and plan inside it.  If the agent can predict what
+will happen before it acts, every real interaction becomes far more
+informative.  Early model-based methods learned transition dynamics in
+tabular or linear form (Chapter~\ref{ch:dp} discusses the planning
+side); modern approaches learn \emph{world models}\,---\,neural
+networks that predict future observations, rewards, and termination
+signals.
+
+Ha and Schmidhuber's ``World Models'' paper (2018) demonstrated that an
+agent could learn a compressed latent representation of its
+observations and then train a policy entirely inside the learned
+model.  Hafner et al.\ extended this line of work with the Dreamer
+family of algorithms (Dreamer, DreamerV2, DreamerV3), which learn a
+recurrent state-space model and optimise a policy by
+back-propagating through imagined trajectories in latent space.
+DreamerV3 achieved human-level performance on dozens of continuous and
+discrete control tasks\,---\,and even mined diamonds in Minecraft\,---\,using
+roughly $10$--$100\times$ fewer environment steps than comparable
+model-free methods.
+
+\index{Dreamer}
+\index{MuZero}
+MuZero (Schrittwieser et al., 2020) took a different approach:
+rather than predicting raw observations, it learned a latent dynamics
+model whose hidden states were trained end-to-end to support planning
+via Monte Carlo tree search.  MuZero matched the performance of
+AlphaZero in Go, chess, and shogi while also mastering Atari games,
+demonstrating that latent-space planning can rival or exceed
+model-free methods even in visually complex domains.
+
+Despite these successes, model-based RL faces persistent challenges.
+Compounding model error\,---\,small inaccuracies in the learned
+dynamics that accumulate over long planning horizons\,---\,can produce
+policies that are optimal in the model but catastrophic in the real
+environment.  Deciding \emph{when} to trust the model and when to
+fall back on real data (the so-called Dyna trade-off; Sutton, 1991)
+remains largely heuristic.
+
+\subsection{Transfer and Few-Shot RL}
+\index{transfer learning!in RL}
+\index{few-shot RL}
+
+A complementary route to sample efficiency is \emph{transfer}:
+leveraging knowledge from previous tasks to accelerate learning on new
+ones.  Meta-RL algorithms such as MAML (Finn et al., 2017) and
+RL$^2$ (Duan et al., 2016) learn an initialisation or an inner-loop
+learning algorithm that can adapt to a new task from a handful of
+episodes.  More recently, foundation-model approaches treat RL
+trajectories as sequences and use in-context learning\,---\,the same
+mechanism that enables few-shot prompting in language models\,---\,to
+adapt to new environments at inference time without gradient updates
+(see Section~\ref{sec:open-offline} for the Decision Transformer and
+related methods).
+
+The vision of a single, general-purpose RL agent that can transfer
+across diverse domains\,---\,an ``RL foundation model''\,---\,remains
+largely unrealised.  Gato (Reed et al., 2022) showed that a single
+transformer could play Atari, caption images, and control a robotic
+arm, but its per-task performance lagged behind specialist agents.
+Closing this gap is an active area of research.
+
+
+% ===========================================================
+\section{Reward Specification and Alignment}
+\label{sec:open-alignment}
+% ===========================================================
+
+\index{reward hacking}
+\index{Goodhart's law}
+\index{alignment}
+Every RL algorithm optimises a reward signal.  When that signal
+faithfully captures what we want, optimisation is beneficial; when it
+does not, the agent exploits the gap\,---\,a phenomenon known as
+\emph{reward hacking}.  The problem is an instance of Goodhart's
+law\index{Goodhart's law}: ``When a measure becomes a target, it
+ceases to be a good measure.''
+
+Chapter~\ref{ch:reward-models} introduced reward models trained from
+human comparisons, and Chapter~\ref{ch:dpo} showed how DPO sidesteps
+explicit reward modelling.  Both approaches mitigate reward hacking to
+some extent, but neither eliminates it.  As models become more
+capable, the stakes of misspecified rewards grow.
+
+\subsection{Scalable Oversight}
+\index{scalable oversight}
+
+When the agent's capabilities exceed the evaluator's, human feedback
+becomes unreliable.  A coding model may produce solutions that are
+correct but inscrutable; a scientific-reasoning model may propose
+experiments whose validity a non-expert cannot judge.  The
+\emph{scalable oversight} problem asks: how can we provide reliable
+training signal for systems whose outputs we cannot easily verify?
+
+Several research programmes address this question.  \emph{Debate}
+(Irving et al., 2018) pits two models against each other, with a
+human judge deciding which argument is more convincing; the hope is
+that the truth is easier to verify than to generate.
+\emph{Recursive reward modelling} (Leike et al., 2018) uses an
+AI assistant to help the human evaluate, creating a hierarchy of
+oversight.  \emph{Constitutional AI} (Bai et al., 2022) replaces
+some human feedback with a set of written principles that the model
+critiques itself against, reducing\,---\,though not
+eliminating\,---\,the burden on human evaluators.
+
+\subsection{The Fundamental Challenge}
+
+At its core, the alignment problem is one of \emph{value
+specification}\index{value specification}: translating the rich,
+context-dependent, and often contradictory landscape of human values
+into a formal objective.  RL provides the optimisation machinery, but
+it cannot tell us \emph{what} to optimise.  This is not merely a
+technical problem; it is a philosophical one, touching on questions
+that ethicists and political theorists have debated for centuries.
+
+The practical implication for RL researchers is that reward engineering
+will remain a first-class concern.  Advances in interpretability,
+better methods for eliciting human preferences, and formal frameworks
+for specifying constraints will all play a role.  No single technique
+is likely to ``solve'' alignment; the challenge is systemic, and
+progress will be incremental.
+
+
+% ===========================================================
+\section{Safety and Robustness}
+\label{sec:open-safety}
+% ===========================================================
+
+\index{safe reinforcement learning}
+\index{robustness}
+An RL policy that performs well on average may fail catastrophically
+in rare but important situations.  Safety and robustness are
+therefore not luxuries\,---\,they are prerequisites for deploying RL
+in the real world.
+
+\subsection{Safe Exploration}
+\index{safe exploration}
+\index{constrained MDP}
+
+In domains such as autonomous driving, healthcare, and industrial
+control, the agent cannot be allowed to explore freely: certain states
+(collisions, overdoses, equipment damage) must be avoided even during
+training.  \emph{Constrained MDPs}\index{constrained MDP} formalise
+this by augmenting the standard MDP with cost functions and
+constraints of the form $\E_\pi[\sum_t c(s_t, a_t)] \leq d$.
+Lagrangian methods and constrained policy optimisation (CPO;
+Achiam et al., 2017) optimise the reward subject to these constraints,
+but guaranteeing constraint satisfaction during learning\,---\,not
+just at convergence\,---\,remains difficult.
+
+\subsection{Distributional Robustness and Adversarial Attacks}
+\index{distributional robustness}
+\index{adversarial attack!on RL}
+
+Policies trained in one environment may break when deployed in another
+that differs even slightly.  \emph{Distributional robustness}
+formulates the problem as a game between the agent and an adversary
+that perturbs the transition dynamics or observations within a
+bounded uncertainty set.  Robust MDPs (Iyengar, 2005; Nilim and
+El~Ghaoui, 2005) provide a theoretical foundation, and recent work
+has scaled these ideas to deep RL via adversarial training and
+domain randomisation.
+
+A related concern is \emph{adversarial attacks on RL policies}:
+small, carefully crafted perturbations to the observation can cause a
+well-trained policy to take catastrophically bad actions (Huang et
+al., 2017).  Certified defences analogous to those developed for
+image classifiers are still in their infancy for sequential
+decision-making.
+
+\subsection{Formal Verification}
+\index{formal verification}
+
+Can we \emph{prove} that a learned policy satisfies a safety property?
+Formal verification techniques from software engineering\,---\,model
+checking, abstract interpretation, satisfiability modulo theories
+(SMT)\,---\,have been applied to small neural-network controllers, but
+scaling them to the networks used in modern deep RL remains an open
+problem.  Bridging the gap between the statistical guarantees of
+learning theory and the deterministic guarantees of formal methods is
+one of the most important\,---\,and most difficult\,---\,challenges in
+the field.
+
+
+% ===========================================================
+\section{Offline and Batch RL}
+\label{sec:open-offline}
+% ===========================================================
+
+\index{offline reinforcement learning}
+\index{batch reinforcement learning}
+In many practical settings\,---\,healthcare, recommendation systems,
+dialogue\,---\,online interaction is expensive or risky.
+\emph{Offline RL} (also called \emph{batch RL}) aims to learn a
+good policy from a fixed dataset of previously collected transitions,
+with no further environment interaction.  The idea is appealing:
+organisations often possess large logs of past behaviour, and offline
+RL promises to extract value from this data.
+
+\subsection{The Distribution-Shift Problem}
+\index{distribution shift!offline RL}
+
+The central difficulty is \emph{distribution shift}.  The dataset was
+collected by some behaviour policy $\mu$, but the learned policy
+$\pi$ may visit states that $\mu$ rarely or never encountered.  In
+those regions, the value estimates are unreliable, and naive off-policy
+methods can diverge or produce delusionally optimistic policies.
+
+\emph{Conservative Q-Learning} (CQL; Kumar et al., 2020) addresses
+this by adding a regularisation term that penalises the Q-function on
+out-of-distribution actions, effectively learning a lower bound on the
+true value.  Implicit Q-Learning (IQL; Kostrikov et al., 2022)
+avoids querying the policy altogether during training, using expectile
+regression to estimate upper-envelope Q-values from the dataset.
+Both methods have shown strong performance on standard benchmarks,
+but their effectiveness depends heavily on the quality and coverage
+of the dataset.
+
+\subsection{Sequence Modelling and Decision Transformers}
+\index{Decision Transformer}
+
+An influential alternative to value-function-based offline RL is to
+reframe the problem as \emph{sequence modelling}.  The Decision
+Transformer (Chen et al., 2021) conditions a transformer on the
+desired return, past states, and past actions, and autoregressively
+predicts future actions.  At test time, the agent conditions on a
+high return and generates the corresponding behaviour.  This approach
+sidesteps Bellman backups entirely, leveraging the sequence-modelling
+strengths of transformers.
+
+Trajectory Transformer (Janner et al., 2021) extended the idea by
+modelling the joint distribution over states, actions, and rewards,
+enabling beam-search planning at inference time.  These methods blur
+the line between RL and supervised learning, and their theoretical
+properties\,---\,when they outperform, when they fail, and why\,---\,are
+still being understood.
+
+\subsection{Offline-to-Online}
+\index{offline-to-online RL}
+
+A promising hybrid is \emph{offline-to-online} RL: pre-train a policy
+from a static dataset, then fine-tune with a small amount of online
+interaction.  This mirrors the pre-train-then-fine-tune paradigm that
+has been so successful for language models
+(Chapter~\ref{ch:lm-post-training}).  Early results (Nair et al.,
+2020; Lee et al., 2022) show that offline pre-training can
+dramatically accelerate online learning, but preventing catastrophic
+forgetting of offline knowledge and managing the distribution shift
+during the transition remain open problems.
+
+
+% ===========================================================
+\section{Multimodal and Embodied RL}
+\label{sec:open-embodied}
+% ===========================================================
+
+\index{embodied RL}
+\index{sim-to-real transfer}
+Reinforcement learning began with physical intuitions\,---\,a robot
+navigating a maze, a thermostat regulating temperature\,---\,but for
+the past decade the most visible successes have been in simulation:
+games, language, and recommendation.  Returning RL to the physical
+world is one of the field's great unfinished projects.
+
+\subsection{Sim-to-Real Transfer}
+
+Training in simulation is cheap and safe; deploying in the real world
+is neither.  The \emph{sim-to-real gap}\index{sim-to-real gap}
+arises because simulators inevitably simplify physics, sensor noise,
+and visual appearance.  Domain randomisation (Tobin et al., 2017)
+mitigates the gap by training the policy across a distribution of
+simulated environments, so that the real world appears as just another
+sample.  System identification, adaptive control, and learned residual
+models offer complementary approaches, but reliably closing the
+sim-to-real gap for contact-rich manipulation remains an active
+challenge.
+
+\subsection{Vision-Language-Action Models}
+\index{vision-language-action model}
+
+A new class of \emph{vision-language-action} (VLA) models aims to
+unify perception, language understanding, and motor control in a
+single architecture.  RT-2 (Brohan et al., 2023) fine-tuned a
+vision-language model to output robotic actions as text tokens,
+demonstrating that semantic knowledge from web-scale pre-training
+could transfer to manipulation tasks.  Octo (Ghosh et al., 2024) and
+$\pi_0$ (Black et al., 2024) pushed this further with
+transformer architectures that consume images and language instructions
+and emit continuous joint commands.
+
+These models are still far from the dexterity and adaptability of
+human manipulation.  Key bottlenecks include the scarcity of
+high-quality robotic demonstration data, the difficulty of specifying
+rewards for contact-rich tasks, and the computational cost of
+real-time inference on resource-constrained hardware.
+
+\subsection{Continuous Control at Scale}
+
+Beyond manipulation, RL is being applied to locomotion (legged
+robots trained via PPO in simulation and deployed on hardware),
+autonomous racing (Gran Turismo), drone navigation, and whole-body
+humanoid control.  The common thread is that these tasks involve
+high-dimensional continuous action spaces, complex contact dynamics,
+and stringent real-time requirements.  Scaling RL to these settings
+pushes both algorithmic and engineering frontiers.
+
+
+% ===========================================================
+\section{RL and Foundation Models}
+\label{sec:open-foundation}
+% ===========================================================
+
+\index{foundation model!RL for}
+Perhaps the most consequential development in recent RL is its
+emergence as the \emph{universal post-training method} for foundation
+models.  Chapters~\ref{ch:lm-post-training}--\ref{ch:reasoning}
+documented this for text; the same pattern is now repeating across
+modalities.
+
+\subsection{RL for Language and Reasoning}
+
+RLHF (Chapter~\ref{ch:dpo}) and GRPO (Chapter~\ref{ch:grpo}) have
+become standard tools for aligning and improving large language models.
+As discussed in Chapter~\ref{ch:reasoning}, RL with verifiable rewards
+has enabled dramatic improvements in mathematical reasoning and code
+generation.  The frontier is moving toward longer-horizon reasoning
+tasks\,---\,multi-step scientific problem-solving, software
+engineering, theorem proving\,---\,where the reward is sparse and
+delayed, and the action space is the space of all possible text
+continuations.
+
+\subsection{RL for Visual Generation}
+
+The same RLHF loop that improved language models has been applied to
+image generation.  DPOK (Fan et al., 2023) and DDPO (Black et al.,
+2024) used policy-gradient methods to fine-tune diffusion models
+against human-preference reward models, improving aesthetic quality and
+prompt adherence.  For video generation, RL-based fine-tuning has been
+used to improve temporal coherence and visual fidelity, though the
+computational cost of generating and scoring video trajectories remains
+a bottleneck.
+
+\subsection{RL for Scientific Discovery}
+\index{scientific discovery!RL for}
+
+RL has contributed to notable scientific breakthroughs.  AlphaFold's
+(Jumper et al., 2021) training pipeline incorporated RL-like
+structural refinement.  GNoME (Merchant et al., 2023) used RL-guided
+search to discover millions of new stable crystal structures.
+FunSearch (Romera-Paredes et al., 2024) combined large language models
+with evolutionary search to discover new mathematical constructions,
+outperforming human mathematicians on the cap-set problem.
+
+The common pattern is RL as the \emph{outer loop}: a foundation model
+proposes candidates (protein structures, material compositions,
+mathematical conjectures), and an RL-like objective scores and selects
+among them.  Extending this pattern to chemistry, drug discovery,
+climate modelling, and engineering design is an active and promising
+frontier.
+
+
+% ===========================================================
+\section{Theoretical Frontiers}
+\label{sec:open-theory}
+% ===========================================================
+
+\index{RL theory}
+The theory of RL is rich in the tabular and linear-function-approximation
+settings (Chapters~\ref{ch:mdp}--\ref{ch:td}), but the methods that
+work best in practice\,---\,deep networks, transformers, high-dimensional
+policy spaces\,---\,often outrun available theory.
+
+\subsection{Regret and Sample Complexity for Deep RL}
+\index{regret bounds!deep RL}
+\index{PAC-MDP}
+
+Regret bounds for tabular MDPs are tight: algorithms such as UCBVI
+achieve $\tilde{O}(\sqrt{H^3 S A T})$ regret, where $H$ is the
+horizon, $S$ the number of states, $A$ the number of actions, and $T$
+the number of episodes.  For linear MDPs, matching upper and lower
+bounds are also known.  But for the nonlinear function approximation
+used in deep RL\,---\,overparameterised neural networks trained with
+stochastic gradient descent\,---\,no comparable guarantees exist.
+
+\emph{Neural tangent kernel} (NTK) analyses provide some insight by
+showing that sufficiently wide networks behave approximately linearly,
+but this regime does not capture the representation learning that
+makes deep RL effective.  Developing a theory that accounts for
+feature learning, non-convex optimisation, and the
+exploration--exploitation trade-off simultaneously is one of the
+hardest open problems in machine learning theory.
+
+\subsection{Convergence of Nonlinear Function Approximation}
+\index{deadly triad}
+
+The \emph{deadly triad}\,---\,the combination of bootstrapping,
+off-policy learning, and function approximation\,---\,was identified
+by Sutton and Barto as a source of divergence in approximate dynamic
+programming (Chapter~\ref{ch:value-approx}).  While algorithms such
+as DQN work well in practice, proving their convergence under
+realistic assumptions (finite-width networks, non-i.i.d.\ data,
+experience replay) remains elusive.  Recent progress includes
+convergence results for overparameterised networks in the NTK regime
+and two-timescale analyses of actor-critic methods, but a unified
+theory is still missing.
+
+\subsection{Statistical Complexity of RLHF}
+\index{RLHF!statistical complexity}
+
+The explosion of RLHF in language-model training
+(Chapter~\ref{ch:dpo}) has spurred new theoretical questions.  How
+many human comparisons are needed to learn a reward model that
+faithfully represents human preferences?  Under what conditions does
+the DPO objective recover the same policy as the RLHF pipeline?  How
+does the quality of the preference data affect the statistical
+efficiency of alignment?  Early results (Zhu et al., 2024; Xu et al.,
+2024) establish sample-complexity bounds under the
+Bradley--Terry\index{Bradley--Terry model} preference model, but the
+theory does not yet account for the distributional and strategic
+complexities of real human feedback.
+
+\subsection{Why Does RL Work for LLMs?}
+
+Perhaps the deepest theoretical puzzle is why RL fine-tuning works as
+well as it does for large language models.  The action space is
+enormous (the full vocabulary at each token position), the reward is
+sparse and delayed (often a single scalar for an entire response), and
+the policy is a billion-parameter network.  Classical RL theory
+predicts that such problems should be intractable, yet PPO and GRPO
+produce reliable improvements in practice.  Understanding
+this\,---\,likely through a combination of the structure of natural
+language, the implicit exploration provided by token sampling, and the
+warm start from pre-training\,---\,is a key open question.
+
+
+% ===========================================================
+\section{The Road Ahead}
+\label{sec:open-road}
+% ===========================================================
+
+Let us close by stepping back from individual problems and considering
+the broader trajectory of the field.
+
+\paragraph{RL as universal fine-tuning.}
+The most striking trend of the past several years is the
+generalisation of RL from a niche method for game-playing and robotics
+into a \emph{universal fine-tuning method} for any model that generates
+structured output.  Language models, image generators, video
+synthesizers, protein-structure predictors, and robotic controllers are
+all being improved by RL-based post-training.  The underlying
+principle is simple: if you can score the output, you can use RL to
+make the model produce higher-scoring outputs.  This principle, first
+formalised in the policy-gradient theorem (Chapter~\ref{ch:pg}), is
+proving to be one of the most powerful ideas in modern AI.
+
+\paragraph{Convergence of classical theory and modern practice.}
+For decades, RL theory and RL practice developed in largely separate
+communities.  The theorists studied tabular MDPs and linear function
+approximation; the practitioners trained deep networks at scale.
+This gap is beginning to close.  Offline RL theory informs practical
+algorithm design; PAC-Bayes bounds provide non-vacuous generalisation
+guarantees for learned policies; and the study of RLHF is bringing
+learning-theoretic tools to bear on one of the most consequential
+applications of RL.  A unified theory that connects the elegant
+results of the tabular setting to the empirical successes of deep RL
+would be a landmark achievement.
+
+\paragraph{Agents and autonomy.}
+Chapter~\ref{ch:reasoning} and Chapter~\ref{ch:agents} described
+the emergence of RL-trained agents that can reason, use tools, and
+coordinate with other agents.  This trend is accelerating.  As
+language models become more capable and as RL fine-tuning enables
+longer-horizon planning, we may see agents that autonomously conduct
+scientific research, write and debug complex software, manage
+infrastructure, and negotiate on behalf of their users.  The
+technical challenges are immense\,---\,credit assignment over
+thousands of steps, safe exploration in open-ended environments,
+robust multi-agent coordination\,---\,but so are the potential
+benefits.
+
+\paragraph{The importance of safety.}
+With greater autonomy comes greater risk.  The safety and alignment
+challenges discussed in Sections~\ref{sec:open-alignment}
+and~\ref{sec:open-safety} will only become more pressing as agents
+become more capable.  The field needs not only better algorithms but
+also better institutions: evaluation standards, red-teaming
+practices, regulatory frameworks, and a culture of responsible
+development.  RL researchers have a special responsibility here, because
+the optimisation pressure that RL exerts is among the strongest in
+all of machine learning.
+
+\paragraph{What the next decade might bring.}
+Predicting the future of a rapidly moving field is a fool's errand,
+but a few trends seem likely to persist.  First, the scale of RL
+training will continue to grow, driven by the economics of
+post-training foundation models.  Second, the boundary between RL,
+supervised learning, and self-supervised learning will continue to
+blur, as methods like DPO (Chapter~\ref{ch:dpo}) and Decision
+Transformer (Section~\ref{sec:open-offline}) demonstrate.  Third, RL
+will be applied to an ever-wider range of domains, from materials
+science to climate policy to education.  Fourth, the safety and
+alignment challenges will force the community to develop new tools for
+evaluation, oversight, and governance.
+
+The story of reinforcement learning is far from over.  If anything, it
+is just reaching its most interesting chapter.  The mathematical
+foundations laid in Parts~I and~II of this book, the algorithmic
+toolkit developed in Part~III, and the frontier applications surveyed
+in Part~IV all provide the vocabulary needed to contribute.  The open
+problems described in this chapter are not obstacles to be lamented;
+they are opportunities to be seized.  We hope this book has equipped
+you to seize them.

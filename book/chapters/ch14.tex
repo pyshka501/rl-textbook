@@ -1,0 +1,559 @@
+\chapter{Practical RLHF}
+\label{ch:practical-rlhf}
+
+\begin{quote}
+\itshape
+In theory, there is no difference between theory and practice. In practice, there is. \upshape --- Yogi Berra (attributed)
+\end{quote}
+
+\bigskip
+
+The preceding chapters have developed the theory of reward models (Chapter~\ref{ch:reward-models}), direct preference optimisation (Chapter~\ref{ch:dpo}), and group relative policy optimisation (Chapter~\ref{ch:grpo}). Each chapter presented algorithms in their idealised form: clean loss functions, elegant derivations, convergence guarantees under standard assumptions. This chapter is different. It is an engineering chapter\,---\,a practical guide to everything that lies between a theoretical algorithm and a production RLHF system.
+
+The gap between theory and practice in RLHF is enormous. A first-time implementer who follows the PPO update rule from Chapter~\ref{ch:actor-critic} will discover, within hours, that the training run diverges, the reward model is being exploited, GPU memory is exhausted, or the model has collapsed into a single repetitive mode. Each of these failure modes has been encountered\,---\,and solved\,---\,by the teams behind InstructGPT, Llama~2, Claude, and DeepSeek, but the solutions are scattered across blog posts, technical reports, and tribal knowledge.
+
+This chapter gathers that knowledge into a single coherent treatment. Section~\ref{sec:rlhf-pipeline} walks through the complete RLHF pipeline end-to-end. Section~\ref{sec:collecting-preferences} covers the art and science of collecting preference data. Section~\ref{sec:rm-practice} addresses reward model training in practice. Section~\ref{sec:ppo-lm} provides a detailed account of the PPO implementation for language models, including the four-model setup, hyperparameter tables, and mixed-precision considerations. Section~\ref{sec:debugging-rlhf} is a diagnostic manual for the most common failure modes. Section~\ref{sec:scaling-rlhf} treats the distributed systems challenges of scaling RLHF to large models. Section~\ref{sec:safety-constraints} discusses safety and alignment constraints that must be layered on top of the core training loop. Section~\ref{sec:case-studies} presents brief case studies of four major alignment efforts.
+
+% ===========================================================
+\section{The RLHF Pipeline End-to-End}
+\label{sec:rlhf-pipeline}
+
+Before diving into the details of each component, we present the complete RLHF pipeline as a single flow. The pipeline has six stages, each feeding into the next.
+
+\begin{center}
+\begin{tikzpicture}[
+  node distance=0.55cm and 0.3cm,
+  stage/.style={
+    rectangle, rounded corners=2pt, draw=black!70, fill=blue!6,
+    minimum height=0.7cm, minimum width=1.6cm,
+    font=\footnotesize, align=center, inner sep=3pt
+  },
+  arr/.style={-{Stealth[length=4pt]}, thick, black!60}
+]
+  \node[stage] (data)  {Preference\\data};
+  \node[stage, right=of data]  (sft)   {SFT};
+  \node[stage, right=of sft]   (rm)    {Reward\\model};
+  \node[stage, right=of rm]    (rl)    {RL\\(PPO/GRPO)};
+  \node[stage, right=of rl]    (eval)  {Evaluation};
+  \node[stage, right=of eval]  (deploy){Deployment};
+
+  \draw[arr] (data)  -- (sft);
+  \draw[arr] (sft)   -- (rm);
+  \draw[arr] (rm)    -- (rl);
+  \draw[arr] (rl)    -- (eval);
+  \draw[arr] (eval)  -- (deploy);
+
+  % feedback loop
+  \draw[arr, dashed] (eval.south) -- ++(0,-0.55) -| (data.south);
+\end{tikzpicture}
+\end{center}
+
+\begin{description}[leftmargin=!,labelwidth=3.5cm]
+  \item[Stage 1: Data collection] Gather demonstration data for SFT and pairwise preference data for the reward model. Preference data may come from expert annotators, crowd workers, or AI-assisted labelling.
+  \item[Stage 2: Supervised fine-tuning] Train a base language model on high-quality demonstrations to produce $\pi_{\mathrm{SFT}}$. This is the starting point for all subsequent stages and also serves as the reference policy $\pi_{\mathrm{ref}}$.
+  \item[Stage 3: Reward model training] Train a scalar reward model $r_\psi$ on pairwise preferences using the Bradley--Terry loss from Chapter~\ref{ch:reward-models} (Equation~\eqref{eq:rm-loss}).
+  \item[Stage 4: RL training] Optimise the policy $\pi_\theta$ against $r_\psi$ using PPO (Section~\ref{sec:ppo-lm}) or GRPO (Chapter~\ref{ch:grpo}), with a KL penalty towards $\pi_{\mathrm{ref}}$ to prevent reward overoptimisation (Section~\ref{sec:overoptimization}).
+  \item[Stage 5: Evaluation] Evaluate the aligned model on held-out preference benchmarks, safety tests, and human evaluations. Compare against $\pi_{\mathrm{SFT}}$ and previous checkpoints.
+  \item[Stage 6: Deployment] Deploy the best checkpoint with monitoring, logging, and safety filters. Collect new feedback from production to close the loop.
+\end{description}
+
+The dashed arrow from evaluation back to data collection represents the \emph{iterative alignment} loop: production feedback generates new preference data, which triggers a new round of reward model and policy training. In practice, major alignment efforts run this loop multiple times. InstructGPT (Ouyang et al., 2022) ran two full iterations; Llama~2 (Touvron et al., 2023) ran five.
+
+\begin{remark}[Stages are not always sequential]
+\label{rem:pipeline-variations}
+Not every system follows the linear six-stage pipeline exactly. Some teams train the reward model and SFT model jointly (multi-task learning). Others skip the separate SFT stage entirely and begin RL training from a pretrained base model with a strong reward model to compensate. GRPO (Chapter~\ref{ch:grpo}) eliminates the reward model for tasks with verifiable rewards. DPO (Chapter~\ref{ch:dpo}) collapses stages~3 and~4 into a single supervised training step. The pipeline above represents the most common architecture, but practitioners should treat each stage as a module that can be substituted.
+\end{remark}
+
+% ===========================================================
+\section{Collecting Preference Data}
+\label{sec:collecting-preferences}
+
+The quality of the preference data bounds the quality of everything downstream. A perfect RL algorithm optimising a noisy reward model trained on sloppy annotations will produce a mediocre policy. This section describes best practices for preference data collection.
+
+\subsection{Annotation Formats}
+\index{preference data!annotation formats}
+
+The two dominant formats for preference annotation are \emph{pairwise comparison} and \emph{Likert-scale rating}.
+
+\textbf{Pairwise comparison.}\quad Given a prompt $x$ and two responses $y_A, y_B$, the annotator selects the better response. This is the format assumed by the Bradley--Terry model (Definition~\ref{def:bt-model}). Its main advantage is cognitive simplicity: humans find relative judgements easier than absolute ones. The main drawback is inefficiency: comparing $n$ responses pairwise requires $\binom{n}{2}$ annotations, whereas Likert ratings require only $n$.
+
+\textbf{Likert-scale rating.}\quad Given a prompt $x$ and a single response $y$, the annotator assigns a score on a fixed scale (e.g., 1--7). Likert ratings can be converted to pairwise preferences by treating the higher-rated response as preferred, but this conversion introduces noise when the two ratings are close. The advantage is efficiency; the disadvantage is that individual raters often have idiosyncratic scale usage (one annotator's ``5'' is another's ``3'').
+
+In practice, most large-scale alignment efforts use pairwise comparison as the primary format. Anthropic's data collection for Claude uses a four-point scale (A is much better, A is slightly better, B is slightly better, B is much better), which allows the margin to be incorporated into the reward model loss (Equation~\eqref{eq:rm-margin-loss}).
+
+\subsection{Inter-Annotator Agreement}
+\index{inter-annotator agreement}
+
+When multiple annotators label the same pair, they often disagree. \emph{Inter-annotator agreement} (IAA) measures the consistency of human judgements. The standard metric is Cohen's $\kappa$:\index{Cohen's kappa}
+\[
+\kappa = \frac{p_o - p_e}{1 - p_e},
+\]
+where $p_o$ is the observed agreement rate and $p_e$ is the agreement expected by chance. For binary pairwise preferences, $p_e = 0.5$ and $\kappa = 2p_o - 1$. Values of $\kappa \geq 0.4$ are typically considered moderate agreement; $\kappa \geq 0.6$ is substantial.
+
+InstructGPT reported an IAA of approximately 73\% ($\kappa \approx 0.46$) on their preference data. This is consistent with the general finding that preference annotation is an inherently noisy task\,---\,different annotators may have genuinely different preferences, not just random disagreements. The cDPO label-smoothing technique (Equation~\eqref{eq:cdpo-loss}) explicitly accounts for this noise.
+
+\subsection{Data Quality versus Quantity}
+\label{sec:data-quality-quantity}
+
+A recurring question is whether to invest in more data or better data. The empirical evidence favours quality. Touvron et al.\ (2023) found that Llama~2's reward model performance plateaued after approximately 1 million preference pairs, with diminishing returns thereafter. By contrast, replacing noisy crowd-sourced labels with expert annotations yielded consistent improvements even at the same dataset size.
+
+\begin{remark}[Cost estimates for preference data]
+\label{rem:data-costs}
+As of 2024, typical costs for pairwise preference annotation are: crowd-sourced via platforms such as Scale AI or Surge AI, \$1--3 per comparison; expert annotation by trained linguists, \$5--15 per comparison; red-teaming annotations for safety, \$10--25 per comparison. A full alignment dataset of 100{,}000 preference pairs costs roughly \$100K--300K for crowd-sourced data and considerably more for expert-annotated data. These costs motivate the growing interest in AI-assisted labelling, where a strong language model generates preliminary labels that human annotators then verify.
+\end{remark}
+
+\subsection{Common Pitfalls}
+\index{preference data!pitfalls}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Length bias.} Annotators tend to prefer longer responses, even when the additional length adds no value. This transfers to the reward model, which then encourages verbose output. Mitigation: instruct annotators to penalise unnecessary verbosity; include length-controlled pairs in the annotation set.
+  \item \textbf{Position bias.} When two responses are presented side-by-side, annotators slightly prefer the one on the left (or the first one). Mitigation: randomise the presentation order for every pair.
+  \item \textbf{Ambiguous prompts.} When the prompt is unclear, annotators may disagree not because they have different quality standards but because they interpreted the prompt differently. Mitigation: filter out prompts with high annotator disagreement.
+  \item \textbf{Sycophancy leakage.} If annotators prefer responses that agree with premises in the prompt (even false ones), the reward model will learn to be sycophantic. Mitigation: include adversarial prompts with false premises and reward annotators for selecting responses that politely correct the user.
+\end{itemize}
+
+% ===========================================================
+\section{Training Reward Models in Practice}
+\label{sec:rm-practice}
+
+Chapter~\ref{ch:reward-models} derived the Bradley--Terry loss and proved that the reward model converges to the true reward function up to a constant. In practice, several additional considerations determine whether the reward model actually works.
+
+\subsection{Architecture Choices}
+\index{reward model!architecture}
+
+The reward model $r_\psi(x, y)$ is typically a transformer that takes the concatenation of prompt and response as input and produces a scalar output. Two architectural strategies are common:
+
+\textbf{Same architecture as the policy.}\quad The reward model is initialised from the same SFT checkpoint as the policy, with the language modelling head replaced by a linear projection to a scalar. This is the approach used by InstructGPT and Llama~2. The advantage is that the reward model starts with a strong representation of language; the disadvantage is the large memory footprint, since the reward model is as large as the policy.
+
+\textbf{Separate, smaller model.}\quad The reward model uses a smaller transformer (e.g., a 7B reward model for a 70B policy). This reduces memory requirements but risks underfitting the preference distribution. Gao et al.\ (2023) showed that smaller reward models lead to faster overoptimisation (see Example~\ref{ex:overopt-scaling}), suggesting that reward model capacity should be as large as budget allows.
+
+\subsection{Training Stability and Overfitting}
+\label{sec:rm-overfitting}
+\index{reward model!overfitting}
+
+Reward models are prone to overfitting because preference datasets are relatively small (tens of thousands to low millions of pairs) compared to pretraining corpora (trillions of tokens). Standard mitigations include:
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Low learning rates.} Typical values are $1 \times 10^{-6}$ to $5 \times 10^{-6}$, an order of magnitude below SFT learning rates.
+  \item \textbf{Early stopping.} Monitor pairwise accuracy on a held-out set and stop when it begins to decrease.
+  \item \textbf{Label smoothing.} Replace the hard Bradley--Terry labels with $1 - \epsilon$ and $\epsilon$ for some small $\epsilon$ (typically $0.1$), as in the cDPO formulation (Equation~\eqref{eq:rm-label-smooth}).
+  \item \textbf{Dropout.} Apply dropout ($p = 0.1$) to the final layers of the reward model.
+\end{itemize}
+
+\subsection{Calibration and Evaluation Metrics}
+\label{sec:rm-eval}
+\index{reward model!evaluation}
+
+A reward model can have high pairwise accuracy yet still produce poorly calibrated scalar outputs. The key metrics to monitor are:
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Pairwise accuracy} (Equation~\eqref{eq:rm-accuracy}): the fraction of held-out preference pairs where $r_\psi(x, y_w) > r_\psi(x, y_l)$. Values of 70--75\% are typical for general-purpose alignment; 80\%+ indicates a strong reward model.
+  \item \textbf{Reward distribution.} Plot the distribution of $r_\psi$ scores across a large set of responses. The distribution should be unimodal and roughly centred; a bimodal distribution suggests the reward model has learned a spurious binary feature (e.g., response length).
+  \item \textbf{Agreement with human rankings.} On a small set of prompts with four or more responses ranked by experts, compute the Kendall's $\tau$ between the reward model ranking and the expert ranking.
+\end{itemize}
+
+\subsection{When to Retrain}
+\index{reward model!retraining}
+
+The reward model must be retrained when the policy has drifted far enough from the distribution on which the reward model was trained. A practical heuristic: monitor the KL divergence between the current policy and the reference policy. When $\KL{\pi_\theta}{\pi_{\mathrm{ref}}}$ exceeds a threshold (typically 5--15 nats, depending on model size), collect new preference data from the current policy and retrain the reward model. This is the iterative RLHF loop described in Section~\ref{sec:rlhf-pipeline}.
+
+% ===========================================================
+\section{PPO for Language Models: Implementation Details}
+\label{sec:ppo-lm}
+
+Applying PPO (Chapter~\ref{ch:actor-critic}) to language model alignment is not a straightforward exercise. The token-level MDP structure of language generation (Definition~\ref{def:token-mdp}), the enormous parameter count, and the need to compute likelihoods under both the policy and the reference model create a unique set of engineering challenges. This section describes the standard implementation.
+
+\subsection{The Four-Model Setup}
+\label{sec:four-models}
+\index{RLHF!four-model setup}
+
+The PPO-based RLHF training loop maintains four neural networks simultaneously:
+\begin{enumerate}
+  \item \textbf{Policy model} $\pi_\theta$: the language model being trained. Generates responses and computes log-probabilities.
+  \item \textbf{Reference model} $\pi_{\mathrm{ref}}$: a frozen copy of the SFT checkpoint. Used to compute the KL penalty.
+  \item \textbf{Reward model} $r_\psi$: a frozen reward model trained on preference data. Scores completed responses.
+  \item \textbf{Value model} $V_\phi$: a critic network that estimates the expected future reward from each token position. Used for advantage estimation.
+\end{enumerate}
+
+At the 7B parameter scale, each model requires approximately 14\,GB in half precision (FP16/BF16). Holding all four in GPU memory simultaneously demands at least 56\,GB\,---\,feasible on a single A100 (80\,GB) with careful memory management, but tight when accounting for activations and the KV cache during generation. At 70B, the four models require roughly 560\,GB, necessitating multi-GPU setups (Section~\ref{sec:scaling-rlhf}).
+
+\subsection{KL Penalty Implementation}
+\label{sec:kl-implementation}
+\index{KL penalty!implementation}
+
+The KL penalty prevents the policy from straying too far from the reference. Two implementation strategies are common:
+
+\textbf{Per-token KL reward.}\quad At each token position $t$, subtract a KL penalty from the reward:
+\begin{equation}
+\label{eq:per-token-kl}
+\tilde{r}_t = \begin{cases}
+  -\beta \log\dfrac{\pi_\theta(y_t \mid x, y_{<t})}{\pi_{\mathrm{ref}}(y_t \mid x, y_{<t})}, & t < T, \\[6pt]
+  r_\psi(x, y) - \beta \log\dfrac{\pi_\theta(y_T \mid x, y_{<T})}{\pi_{\mathrm{ref}}(y_T \mid x, y_{<T})}, & t = T.
+\end{cases}
+\end{equation}
+The terminal reward at $t = T$ includes both the reward model score and the KL penalty for the final token. This formulation distributes the KL signal across all token positions, which improves credit assignment. It is equivalent to Equation~\eqref{eq:kl-token-reward} from Chapter~\ref{ch:reward-models}.
+
+\textbf{Sequence-level KL penalty.}\quad Add the total sequence-level KL divergence as a single penalty at the end of the sequence:
+\[
+\tilde{r} = r_\psi(x, y) - \beta \sum_{t=1}^{T} \log\frac{\pi_\theta(y_t \mid x, y_{<t})}{\pi_{\mathrm{ref}}(y_t \mid x, y_{<t})}.
+\]
+This is simpler to implement but concentrates the entire KL signal at the final token, making advantage estimation less informative for intermediate tokens.
+
+In practice, the per-token formulation is preferred.
+
+\subsection{Advantage Estimation with GAE}
+\label{sec:gae-lm}
+\index{GAE!language models}
+
+Given the modified per-token rewards $\{\tilde{r}_t\}$ and the value estimates $\{V_\phi(s_t)\}$, the generalised advantage estimate (GAE) from Chapter~\ref{ch:actor-critic} is
+\begin{equation}
+\label{eq:gae-lm}
+\hat{A}_t = \sum_{l=0}^{T-t} (\gamma\lambda)^l \,\delta_{t+l}, \qquad \delta_t = \tilde{r}_t + \gamma V_\phi(s_{t+1}) - V_\phi(s_t),
+\end{equation}
+where $\gamma$ is the discount factor and $\lambda$ is the GAE parameter. For language model RLHF, the standard choice is $\gamma = 1$ (no discounting within a response) and $\lambda \in [0.95, 1.0]$. Setting $\gamma = 1$ is natural because the ``episode'' is a single response: there is no reason to discount future tokens within a sentence.
+
+\subsection{Mini-Batch Construction and Gradient Accumulation}
+\label{sec:minibatch}
+
+A single PPO iteration proceeds as follows:
+\begin{enumerate}
+  \item \textbf{Rollout phase.} Sample a batch of prompts from $\mathcal{D}$. Generate responses using $\pi_\theta$. Score each response with $r_\psi$ and compute per-token log-probabilities under both $\pi_\theta$ and $\pi_{\mathrm{ref}}$.
+  \item \textbf{Advantage computation.} Compute GAE advantages using the value model $V_\phi$.
+  \item \textbf{PPO update.} For $K$ epochs (typically $K = 2$--$4$), shuffle the rollout data into mini-batches and perform gradient updates on the clipped PPO objective:
+  \begin{equation}
+  \label{eq:ppo-clip-lm}
+  \mathcal{L}^{\mathrm{clip}}_t(\theta) = -\min\!\bigl(r_t(\theta)\,\hat{A}_t,\; \mathrm{clip}(r_t(\theta), 1{-}\epsilon, 1{+}\epsilon)\,\hat{A}_t\bigr),
+  \end{equation}
+  where $r_t(\theta) = \pi_\theta(y_t|x,y_{<t}) / \pi_{\theta_{\mathrm{old}}}(y_t|x,y_{<t})$ is the importance ratio and $\epsilon$ is the clipping parameter.
+  \item \textbf{Value update.} Update $V_\phi$ by minimising the squared error against the GAE return targets.
+\end{enumerate}
+
+When GPU memory is insufficient for the full mini-batch, \emph{gradient accumulation} is used: forward and backward passes are computed on micro-batches, and gradients are summed before the optimiser step. This is mathematically equivalent to a larger batch size but requires only the memory of a single micro-batch.
+
+\subsection{Mixed Precision Training}
+\index{mixed precision}
+
+Modern RLHF implementations use BF16 (bfloat16) for forward passes and FP32 for gradient accumulation and optimiser states. BF16 halves the memory footprint compared to FP32 while preserving the dynamic range needed for stable training. The value model is sometimes kept in FP32 to avoid numerical issues in the advantage computation, particularly when rewards span a wide range.
+
+\subsection{Hyperparameters}
+\label{sec:ppo-hyperparams}
+
+Table~\ref{tab:ppo-hyperparams} lists typical hyperparameter ranges for PPO-based RLHF on language models of various sizes.
+
+\begin{table}[ht]
+\centering
+{\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Hyperparameter} & \textbf{Typical range} & \textbf{Notes} \\
+\midrule
+Learning rate (policy) & $5 \times 10^{-7}$ -- $2 \times 10^{-6}$ & Cosine schedule, warmup 3--10\% \\
+Learning rate (value)  & $1 \times 10^{-6}$ -- $5 \times 10^{-6}$ & Often 2--5$\times$ the policy LR \\
+KL coefficient $\beta$ & $0.01$ -- $0.2$ & Start low, increase if KL explodes \\
+Clip parameter $\epsilon$ & $0.1$ -- $0.2$ & $0.2$ is the most common \\
+GAE $\lambda$ & $0.95$ -- $1.0$ & $1.0$ common for LMs \\
+Discount $\gamma$ & $1.0$ & No discounting within response \\
+PPO epochs per batch $K$ & $2$ -- $4$ & More epochs risk overfitting \\
+Batch size (prompts) & $64$ -- $512$ & Larger is stabler \\
+Mini-batch size & $8$ -- $64$ & Limited by GPU memory \\
+Max response length & $512$ -- $2048$ tokens & Task-dependent \\
+\bottomrule
+\end{tabular}
+}
+\caption{Typical PPO hyperparameters for RLHF on language models.}
+\label{tab:ppo-hyperparams}
+\end{table}
+
+% ===========================================================
+\section{Debugging RLHF}
+\label{sec:debugging-rlhf}
+
+RLHF is notoriously difficult to debug. Training runs are expensive, failure modes are subtle, and the interaction between four neural networks creates a large space of possible problems. This section catalogues the most common failures and their diagnostics.
+
+\subsection{Reward Hacking}
+\index{reward hacking!symptoms}
+
+\emph{Symptom:} The reward model score increases rapidly, but the quality of generated text\,---\,as judged by humans\,---\,degrades. Typical manifestations include excessively verbose responses, repetitive praise or hedging phrases, and responses that exploit formatting quirks.
+
+\emph{Diagnosis:} Plot both the proxy reward (reward model score) and a gold metric (e.g., human win rate against a baseline) over training. Reward hacking produces a divergence: the proxy reward rises while the gold metric plateaus or drops.
+
+\emph{Fixes:}
+\begin{itemize}[leftmargin=*]
+  \item Increase the KL coefficient $\beta$. This is the first-line defence.
+  \item Retrain the reward model on data generated by the current policy.
+  \item Ensemble multiple reward models and use the minimum or median score.
+  \item Add a length penalty to the reward to counteract verbosity hacking.
+\end{itemize}
+
+\subsection{KL Divergence Explosion}
+\index{KL divergence!explosion}
+
+\emph{Symptom:} The KL divergence $\KL{\pi_\theta}{\pi_{\mathrm{ref}}}$ grows rapidly (e.g., exceeding 20 nats within a few hundred steps), and training becomes unstable.
+
+\emph{Diagnosis:} Monitor the per-token KL at each position. If a few token positions have extremely high KL, the policy may have learned to always produce a specific token at those positions.
+
+\emph{Fixes:}
+\begin{itemize}[leftmargin=*]
+  \item Lower the learning rate.
+  \item Increase $\beta$ or switch to an adaptive KL penalty that adjusts $\beta$ dynamically to maintain a target KL.
+  \item Reduce the number of PPO epochs per batch ($K$).
+\end{itemize}
+
+\subsection{Mode Collapse}
+\index{mode collapse}
+
+\emph{Symptom:} The policy generates nearly identical responses to different prompts. Diversity metrics (e.g., distinct $n$-grams, self-BLEU) drop precipitously.
+
+\emph{Diagnosis:} Sample 100 responses from the policy on diverse prompts and compute pairwise BLEU scores. A mean pairwise BLEU above 0.5 is a strong indicator of collapse.
+
+\emph{Fixes:}
+\begin{itemize}[leftmargin=*]
+  \item Increase $\beta$ to keep the policy closer to the diverse reference.
+  \item Increase the sampling temperature during rollouts.
+  \item Add an entropy bonus to the PPO objective.
+\end{itemize}
+
+\subsection{Training Instability}
+\index{RLHF!training instability}
+
+\emph{Symptom:} The policy loss oscillates wildly, or the reward score is non-monotonic with large swings between batches.
+
+\emph{Fixes:}
+\begin{itemize}[leftmargin=*]
+  \item Reduce the learning rate and increase the batch size.
+  \item Ensure that advantage estimates are normalised (zero mean, unit variance) within each mini-batch.
+  \item Verify that the value model is not lagging behind the policy; if necessary, update it more frequently.
+  \item Check for numerical issues in BF16: switch the value model head to FP32.
+\end{itemize}
+
+\subsection{Diagnostic Metrics to Monitor}
+\label{sec:diagnostics}
+
+Table~\ref{tab:diagnostics} summarises the key metrics to log during RLHF training.
+
+\begin{table}[ht]
+\centering
+{\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Metric} & \textbf{Healthy range} & \textbf{Red flag} \\
+\midrule
+Mean reward & Slowly increasing & Rapid spike (hacking) \\
+KL divergence & $1$--$15$ nats & $> 20$ nats \\
+Policy entropy & Stable or slowly decreasing & Sudden drop (collapse) \\
+Clip fraction & $0.05$--$0.15$ & $> 0.3$ (updates too large) \\
+Value loss & Decreasing & Increasing (value model failing) \\
+Mean response length & Stable & Monotonic increase (verbosity hack) \\
+Approx.\ policy gradient norm & Stable & Spikes (instability) \\
+\bottomrule
+\end{tabular}
+}
+\caption{Diagnostic metrics for RLHF training. ``Red flag'' indicates a value that should trigger investigation.}
+\label{tab:diagnostics}
+\end{table}
+
+% ===========================================================
+\section{Scaling RLHF}
+\label{sec:scaling-rlhf}
+
+Training RLHF at the scale of 70B+ parameter models requires distributing computation across many GPUs. The key challenge is that the RLHF training loop has two distinct phases\,---\,generation and training\,---\,with very different computational profiles.
+
+\subsection{Generation versus Training}
+\index{RLHF!generation phase}
+
+The \emph{generation phase} (rollout collection) is autoregressive: each token depends on all previous tokens, which limits parallelism within a single sequence. The primary parallelism axis is across sequences (data parallelism) and across transformer layers (tensor parallelism). Generation is memory-bound due to the KV cache, which grows linearly with sequence length.
+
+The \emph{training phase} (PPO updates) is a standard forward-backward pass over fixed-length sequences. It is compute-bound and parallelises well along the batch dimension (data parallelism) and model dimension (tensor parallelism or pipeline parallelism).
+
+\subsection{Parallelism Strategies}
+\index{tensor parallelism}
+\index{pipeline parallelism}
+
+\begin{description}[leftmargin=!,labelwidth=3.5cm]
+  \item[Data parallelism] Replicate the model on each GPU; each GPU processes a different subset of the batch. Gradients are synchronised with AllReduce. Works for both generation and training, but requires each GPU to hold a full model copy.
+  \item[Tensor parallelism] Split individual weight matrices across GPUs within a node. Reduces per-GPU memory but requires high-bandwidth interconnects (NVLink). Essential for models that do not fit on a single GPU.
+  \item[Pipeline parallelism] Split the model into stages (groups of layers), each assigned to a different GPU. Useful for training when combined with micro-batch scheduling (e.g., 1F1B) to reduce bubble time.
+  \item[Async rollout generation] Decouple the generation and training phases: a pool of GPUs generates rollouts asynchronously while another pool performs PPO updates on completed rollouts. This is the approach used by OpenAI's RLHF infrastructure and by open-source frameworks such as DeepSpeed-Chat and OpenRLHF.
+\end{description}
+
+\subsection{Compute Budget Estimates}
+\label{sec:compute-budgets}
+
+Table~\ref{tab:compute-budget} provides rough compute estimates for a single round of RLHF training at different model scales, assuming 50{,}000 prompts and 4 PPO epochs.
+
+\begin{table}[ht]
+\centering
+{\footnotesize
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Model size} & \textbf{GPUs (A100 80\,GB)} & \textbf{Time (approx.)} & \textbf{Cost (approx.)} \\
+\midrule
+7B   & 8   & 12--24 hours & \$500--1{,}000 \\
+13B  & 16  & 1--2 days    & \$2{,}000--4{,}000 \\
+70B  & 64  & 3--5 days    & \$20{,}000--40{,}000 \\
+\bottomrule
+\end{tabular}
+}
+\caption{Approximate compute budgets for a single RLHF training round. Costs assume cloud GPU pricing of \$2--3/GPU-hour.}
+\label{tab:compute-budget}
+\end{table}
+
+These estimates are highly variable and depend on response length, batch size, the number of PPO epochs, and the efficiency of the distributed training framework. Nevertheless, they illustrate a key point: RLHF training is expensive, but it is a small fraction of the cost of pretraining. A typical pretraining run for a 70B model consumes millions of GPU-hours; a single RLHF round consumes thousands.
+
+% ===========================================================
+\section{Safety and Alignment Constraints}
+\label{sec:safety-constraints}
+
+Maximising reward is necessary but not sufficient for a safe deployment. This section discusses the additional constraints that must be layered on top of the core RLHF training loop.
+
+\subsection{Red-Teaming}
+\index{red-teaming}
+
+\emph{Red-teaming} is the systematic process of probing a model for harmful outputs. A red team generates adversarial prompts designed to elicit toxic, biased, or dangerous responses. The resulting failures are used to construct targeted preference data (where the harmful response is marked as rejected), which is then incorporated into the next round of reward model and policy training.
+
+Red-teaming is most effective when it is \emph{iterative}: the red team attacks the latest checkpoint, failures are patched, and the red team attacks again. Ganguli et al.\ (2022) found that red-teaming a language model for 3--4 rounds reduced the attack success rate by 75\% compared to a single round.
+
+\subsection{Constitutional AI Integration}
+\index{Constitutional AI}
+
+Constitutional AI (Bai et al., 2022) augments RLHF with a set of explicit principles (a ``constitution'') that the model must follow. In the standard implementation, a language model critiques its own outputs against the constitution and generates revised responses. These revised responses are used as the preferred response in a preference pair, creating synthetic preference data without human annotation. The constitutional approach can be integrated into the RLHF pipeline as an additional data source for reward model training.
+
+\subsection{Helpfulness versus Harmlessness}
+\index{helpfulness-harmlessness tradeoff}
+
+A persistent tension in alignment is the tradeoff between helpfulness and harmlessness. A model trained aggressively on harmlessness may refuse to answer benign questions that superficially resemble harmful ones (over-refusal). Conversely, a model trained primarily on helpfulness may comply with harmful requests.
+
+The standard mitigation is to train separate reward models for helpfulness and harmlessness (or use a single reward model with separate heads) and combine them during RL training:
+\[
+r(x, y) = r_{\text{helpful}}(x, y) + \alpha\,r_{\text{harmless}}(x, y),
+\]
+where $\alpha$ controls the weight given to harmlessness. Llama~2 used a variant of this approach, with $\alpha$ increasing over the course of training to emphasise safety in later stages.
+
+\subsection{When to Stop Training}
+\label{sec:when-stop}
+
+There is no single criterion for when to stop RLHF training. In practice, teams use a combination of:
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Human evaluation plateaus.} When successive checkpoints show no improvement on human evaluations (e.g., Elo ratings from head-to-head comparisons), further training is unlikely to help.
+  \item \textbf{KL budget exhaustion.} Some teams set a maximum KL budget (e.g., 10 nats) and stop training when this budget is reached, reasoning that further divergence from the reference increases the risk of overoptimisation.
+  \item \textbf{Safety regression.} If safety benchmarks degrade relative to a previous checkpoint, training should be rolled back.
+\end{itemize}
+
+% ===========================================================
+\section{Case Studies}
+\label{sec:case-studies}
+
+This section summarises the alignment approaches of four influential systems. Each represents a different point in the design space.
+
+\subsection{InstructGPT (Ouyang et al., 2022)}
+\index{InstructGPT}
+
+InstructGPT was the first large-scale demonstration of RLHF for language models. The pipeline followed the three-stage recipe: SFT on 13{,}000 demonstrations, reward model training on 33{,}000 preference pairs, and PPO fine-tuning. Key engineering decisions included: using a 6B reward model for a 175B policy (choosing to save memory at the cost of reward model capacity); running 2 full iterations of the pipeline; and using a KL coefficient of $\beta = 0.02$. The resulting model was preferred over the 175B SFT baseline by human evaluators 71\% of the time.
+
+\subsection{Llama 2 (Touvron et al., 2023)}
+\index{Llama 2}
+
+Llama~2's alignment effort introduced several innovations. The team collected 1.4 million preference pairs over 5 iterations of the RLHF loop, with fresh data from the latest policy at each iteration. They trained two separate reward models\,---\,one for helpfulness, one for safety\,---\,and combined them with a safety-weighted coefficient that increased during training. A notable technique was \emph{rejection sampling}: at each iteration, the team generated $K$ responses per prompt and selected the best according to the reward model, creating synthetic SFT data that was used to warm-start the next iteration's policy. This ``RLHF + rejection sampling'' combination proved more effective than either technique alone.
+
+\subsection{Anthropic's Approach (Bai et al., 2022)}
+\index{Anthropic}
+
+Anthropic's alignment work for Claude introduced Constitutional AI and emphasised the harmlessness dimension. The key contributions were: the constitutional self-critique mechanism, which generates preference data from the model's own revisions; training with a combined helpfulness-harmlessness reward; and extensive red-teaming with iterative patching. Anthropic also pioneered the use of an online RLHF setup where the reward model is periodically retrained on preferences collected from the latest policy, addressing the distribution shift problem that plagues offline methods like DPO (Section~\ref{sec:dpo-limitations}).
+
+\subsection{DeepSeek's Approach with GRPO (DeepSeek-AI, 2024)}
+\index{DeepSeek}
+\index{GRPO!practical use}
+
+DeepSeek took a different path by replacing PPO with Group Relative Policy Optimisation (GRPO, Chapter~\ref{ch:grpo}). For tasks with verifiable rewards\,---\,mathematics, coding, and factual questions\,---\,GRPO eliminates the reward model entirely by using correctness signals (e.g., unit test pass rates, symbolic verification) as the reward. For open-ended tasks, DeepSeek combined GRPO with a reward model. The key engineering advantage is the elimination of the value model: GRPO normalises rewards within a group of responses to the same prompt, which provides a baseline without requiring a separate critic. This reduces the four-model setup to two models (policy and reference), halving the memory requirement and simplifying the distributed training infrastructure.
+
+% ===========================================================
+\section{Summary}
+\label{sec:ch14-summary}
+
+This chapter has provided a practitioner's guide to implementing RLHF at scale. The core lessons are:
+
+\begin{enumerate}
+  \item The RLHF pipeline has six stages (data collection, SFT, reward model training, RL training, evaluation, deployment), typically run iteratively.
+  \item Preference data quality is more important than quantity. Careful annotation guidelines, randomised presentation order, and attention to biases (length, position, sycophancy) are essential.
+  \item Reward models should be as large as the compute budget allows, trained with low learning rates, and monitored for overfitting. They must be retrained when the policy drifts significantly.
+  \item The PPO implementation for language models requires four models in memory simultaneously. Per-token KL penalties, GAE with $\gamma = 1$, and careful mixed-precision management are the standard engineering choices.
+  \item RLHF failures\,---\,reward hacking, KL explosion, mode collapse\,---\,are common and have well-known diagnostic patterns and fixes. Monitoring the metrics in Table~\ref{tab:diagnostics} is essential.
+  \item Scaling to large models requires combining data, tensor, and pipeline parallelism with asynchronous rollout generation.
+  \item Safety constraints\,---\,red-teaming, constitutional AI, and the helpfulness-harmlessness tradeoff\,---\,must be integrated into the training loop, not bolted on after the fact.
+\end{enumerate}
+
+The case studies illustrate that there is no single ``correct'' way to implement RLHF. InstructGPT used the classical PPO pipeline. Llama~2 added rejection sampling and iterative data collection. Anthropic pioneered constitutional self-critique. DeepSeek replaced PPO with GRPO for verifiable tasks. Each approach reflects different tradeoffs between engineering complexity, data requirements, and alignment quality. The common thread is that successful alignment requires not just the right algorithm but also meticulous attention to data quality, training stability, and safety evaluation.
+
+% ===========================================================
+\section*{Exercises}
+\addcontentsline{toc}{section}{Exercises}
+
+\begin{exercise}
+\label{ex:kl-budget}
+A team is training a 7B language model with PPO-based RLHF. After 500 training steps, the KL divergence $\KL{\pi_\theta}{\pi_{\mathrm{ref}}}$ has reached 18 nats and the mean reward model score has increased from 2.1 to 4.8.
+\begin{enumerate}
+  \item Is the KL divergence in a healthy range? Justify your answer using Table~\ref{tab:diagnostics}.
+  \item The team observes that the mean response length has increased from 120 tokens to 350 tokens. What failure mode does this suggest? Propose two concrete fixes.
+  \item Propose an adaptive scheme for the KL coefficient $\beta$ that maintains a target KL of $d_{\mathrm{target}} = 6$ nats. Write the update rule.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:four-model-memory}
+Consider the four-model PPO setup (Section~\ref{sec:four-models}) for a 13B parameter model.
+\begin{enumerate}
+  \item Estimate the total GPU memory required to hold all four models in BF16, ignoring activations and KV cache.
+  \item The team wants to train on 8$\times$ A100 (80\,GB each). Is data parallelism alone sufficient, or is tensor parallelism required? Justify your answer.
+  \item GRPO eliminates the value model. How much memory does this save, and how does it change the parallelism requirements?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:reward-hacking-detection}
+Design an experiment to detect reward hacking. Given a reward model $r_\psi$ and access to a pool of 500 human annotators:
+\begin{enumerate}
+  \item Describe a protocol for constructing a ``gold'' evaluation set that the reward model has never seen.
+  \item Define a quantitative metric that distinguishes genuine improvement from reward hacking. Be precise about what you would plot and what pattern indicates hacking.
+  \item The team notices that the reward model gives a score of $+5.2$ to the response ``I'm happy to help! Here is a comprehensive, detailed, and thorough answer to your question\ldots'' regardless of what follows. What type of reward hacking is this, and how would you fix the reward model?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:annotation-design}
+You are designing an annotation pipeline for training a reward model for a customer-support chatbot.
+\begin{enumerate}
+  \item Write annotation guidelines (3--5 sentences) for pairwise comparison that address length bias and sycophancy.
+  \item Estimate the cost of collecting 50{,}000 preference pairs using expert annotators at \$10 per comparison. If you have a budget of \$200{,}000, what alternative data collection strategies could you use to augment the expert-annotated data?
+  \item How would you measure inter-annotator agreement on your dataset? What minimum agreement level would you require before using the data for reward model training?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:gae-computation}
+Consider a response of length $T = 4$ tokens with per-token rewards $\tilde{r}_1 = 0.1$, $\tilde{r}_2 = -0.2$, $\tilde{r}_3 = 0.0$, $\tilde{r}_4 = 1.5$ and value estimates $V_1 = 0.8$, $V_2 = 0.6$, $V_3 = 0.9$, $V_4 = 1.0$, $V_5 = 0$ (terminal state).
+\begin{enumerate}
+  \item Compute the TD residuals $\delta_1, \ldots, \delta_4$ with $\gamma = 1$.
+  \item Compute the GAE advantages $\hat{A}_1, \ldots, \hat{A}_4$ with $\lambda = 0.95$.
+  \item Repeat part (b) with $\lambda = 1.0$ and compare. Which setting produces higher-variance advantage estimates, and why?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:scaling-design}
+A research lab wants to run RLHF on a 70B parameter model using PPO. They have a cluster of 64 A100 GPUs (80\,GB each) connected with 400\,Gbps NVLink within nodes of 8 GPUs and 100\,Gbps InfiniBand between nodes.
+\begin{enumerate}
+  \item Propose a parallelism strategy for the generation phase and for the training phase. Specify the tensor parallelism degree, data parallelism degree, and pipeline parallelism degree for each phase.
+  \item The generation phase is autoregressive and memory-bound. Explain why tensor parallelism helps even though it introduces communication overhead.
+  \item The team considers asynchronous rollout generation. Describe the potential staleness problem: the policy used for generation may differ from the policy being updated. Under what conditions is this staleness acceptable?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:case-study-comparison}
+Compare the InstructGPT, Llama~2, and DeepSeek alignment approaches along the following dimensions:
+\begin{enumerate}
+  \item Number of models required in GPU memory during RL training.
+  \item Type and quantity of human preference data used.
+  \item Strategy for addressing reward model staleness (distribution shift).
+  \item Suitability for tasks with verifiable rewards (e.g., mathematics).
+\end{enumerate}
+Present your comparison in a table and write a brief paragraph recommending which approach a startup with limited compute budget should adopt for a general-purpose assistant.
+\end{exercise}

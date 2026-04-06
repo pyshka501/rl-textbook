@@ -1,0 +1,706 @@
+\chapter{Reward Shaping and Reward Models}
+\label{ch:reward-models}
+
+\begin{quote}
+\itshape
+Garbage in, garbage out. The quality of a learned policy can never exceed the quality of the reward signal it optimises.
+\end{quote}
+
+\bigskip
+
+Every reinforcement learning algorithm reduces, at bottom, to the same imperative: maximise the cumulative reward. This makes the reward signal the single most consequential design choice in any RL system. A reward that is misspecified,\,---\,even subtly,\,---\,will produce a policy that is, at best, suboptimal and, at worst, actively harmful. The history of applied RL is littered with cautionary tales: a simulated robot that learned to move by vibrating instead of walking, a game-playing agent that discovered a high-scoring exploit the designers never intended, and\,---\,in the modern era of language model alignment\,---\,chatbots that learned to produce verbose, sycophantic prose because a proxy reward model happened to prefer it.
+
+This chapter attacks the reward design problem from two complementary angles. The first half develops the classical theory of \emph{reward shaping}, which asks: given an environment with a well-defined but sparse or otherwise inconvenient true reward, how can we augment that reward with additional terms that speed up learning without altering the optimal policy? The cornerstone result is the potential-based shaping theorem of Ng, Harada, and Russell (1999), which provides a precise characterisation of all reward augmentations that are guaranteed to be policy-preserving. The second half turns to \emph{learned reward models}: what to do when the true reward is not even known in closed form, and must instead be inferred from human judgements, outcome labels, or step-level annotations. We derive the Bradley--Terry preference model, the cross-entropy loss for training preference reward models, and then treat the distinction between outcome reward models (ORM) and process reward models (PRM) in depth. We close with reward overoptimisation,\,---\,Goodhart's Law in RL,\,---\,and the KL-penalty mechanism that guards against it.
+
+This chapter occupies a pivotal position in the book. It bridges Part~II (classical RL methods, Chapters~\ref{ch:dp}--\ref{ch:actor-critic}) and Part~III (RL for language models). The reward models trained here feed directly into the PPO fine-tuning pipeline (Chapter~\ref{ch:practical-rlhf}), the DPO objective, and the GRPO algorithm described in later chapters. Readers who have mastered the TD and policy-gradient machinery of Part~II will find the reward-modelling material in the second half of this chapter to be a natural extension, cast in the language of large-scale language models.
+
+% ===========================================================
+\section{Potential-Based Reward Shaping}
+\label{sec:reward-shaping}
+
+\subsection{The Sparse-Reward Problem}
+
+Many environments present the agent with a reward signal that is sparse: positive feedback arrives only when a specific goal is reached, and zero reward is received for every other transition. Consider a robot navigating a large maze: the true reward is~$+1$ at the exit and~$0$ everywhere else. An agent exploring at random will find the exit only after an astronomically large number of steps, and until it does, it receives no gradient information at all. Similarly, a language model receiving reward only at the end of a long response must credit each of the hundreds of preceding tokens with a share of that terminal signal\,---\,the credit-assignment problem magnified to an extreme degree.
+
+The intuitive fix is to \emph{shape} the reward: add auxiliary terms that guide the agent toward the goal. A maze-navigating robot might receive a small bonus proportional to how much it reduced its Euclidean distance to the exit. A language model might receive intermediate rewards for producing grammatically correct sentences. However, reward shaping is dangerous. Naively added bonus terms can change the optimal policy: a robot that receives a large bonus for approaching a wall (which happens to be near the exit) may learn to hover near that wall rather than reach the goal. The fundamental question is therefore: \emph{which reward augmentations are guaranteed not to change the set of optimal policies?}
+
+\subsection{The Shaping Theorem}
+
+Ng, Harada, and Russell (1999)\index{reward shaping!Ng-Harada-Russell theorem} answered this question precisely. Their result, known as the \textbf{potential-based shaping theorem}, characterises all reward transformations that are policy-invariant.
+
+\begin{definition}[Potential-based shaping function]
+\label{def:shaping-function}
+\index{reward shaping!potential function}
+Let $\mathcal{M} = (\cS, \cA, P, R, \gamma)$ be a discounted MDP. A \textbf{potential-based shaping function} is a function $F : \cS \times \cA \times \cS \to \R$ of the form
+\begin{equation}
+\label{eq:shaping-F}
+F(s, a, s') = \gamma\,\Phi(s') - \Phi(s),
+\end{equation}
+where $\Phi : \cS \to \R$ is an arbitrary \textbf{potential function}\index{potential function}.
+\end{definition}
+
+Given a shaped reward $\tilde{R}(s,a,s') = R(s,a,s') + F(s,a,s')$, define the shaped MDP $\tilde{\mathcal{M}} = (\cS, \cA, P, \tilde{R}, \gamma)$. The central theorem is the following.
+
+\begin{theorem}[Potential-based shaping theorem, Ng et al.\ 1999]
+\label{thm:shaping}
+\index{reward shaping!shaping theorem}
+Let $F$ be a potential-based shaping function as in~\eqref{eq:shaping-F}. Then:
+\begin{enumerate}
+  \item Every optimal policy for $\mathcal{M}$ is also optimal for $\tilde{\mathcal{M}}$, and vice versa.
+  \item The shaped value function $\tilde{V}^\pi$ and shaped action-value function $\tilde{Q}^\pi$ satisfy
+    \begin{equation}
+    \label{eq:shaped-values}
+    \tilde{V}^\pi(s) = V^\pi(s) - \Phi(s), \qquad
+    \tilde{Q}^\pi(s,a) = Q^\pi(s,a) - \Phi(s).
+    \end{equation}
+  \item $F(s,a,s') = \gamma\Phi(s') - \Phi(s)$ is the \emph{only} family of functions (up to a constant) such that optimal policies are preserved for all MDPs.
+\end{enumerate}
+\end{theorem}
+
+\begin{proof}
+We prove parts~1 and~2. The $n$-step return under the shaped reward, starting from state $s_0$, is
+\begin{align*}
+\tilde{G}_0 &= \sum_{t=0}^{\infty} \gamma^t \tilde{R}(S_t, A_t, S_{t+1}) \\
+&= \sum_{t=0}^{\infty} \gamma^t R(S_t, A_t, S_{t+1})
+   + \sum_{t=0}^{\infty} \gamma^t \bigl(\gamma\Phi(S_{t+1}) - \Phi(S_t)\bigr).
+\end{align*}
+Expanding the second sum as a telescoping series:
+\[
+\sum_{t=0}^{\infty} \gamma^t \bigl(\gamma\Phi(S_{t+1}) - \Phi(S_t)\bigr)
+= \sum_{t=0}^{\infty} \gamma^{t+1}\Phi(S_{t+1}) - \sum_{t=0}^{\infty} \gamma^t\Phi(S_t)
+= -\Phi(S_0).
+\]
+(The telescoping cancellation holds under the assumption that $\gamma^t \Phi(S_t) \to 0$ as $t\to\infty$, which is guaranteed when $\Phi$ is bounded and $\gamma < 1$.) Therefore
+\begin{equation}
+\label{eq:shaping-return}
+\tilde{G}_0 = G_0 - \Phi(S_0).
+\end{equation}
+Taking expectations: $\tilde{V}^\pi(s) = V^\pi(s) - \Phi(s)$, which is~\eqref{eq:shaped-values}. Since $\Phi(s)$ depends only on the current state and not on the action or policy, the advantage function is unchanged:
+\[
+\tilde{A}^\pi(s,a) = \tilde{Q}^\pi(s,a) - \tilde{V}^\pi(s) = Q^\pi(s,a) - V^\pi(s) = A^\pi(s,a).
+\]
+The greedy policy with respect to $\tilde{Q}^\pi$ therefore coincides with the greedy policy with respect to $Q^\pi$, establishing part~1.
+\end{proof}
+
+The elegance of the proof lies in the telescoping identity~\eqref{eq:shaping-return}: adding a potential-based bonus is equivalent to simply translating the entire return by a state-dependent constant $-\Phi(S_0)$, which cannot affect which policy achieves the maximum.
+
+\begin{remark}[Non-potential shaping changes optimal policies]
+\label{rem:non-potential}
+Part~3 of Theorem~\ref{thm:shaping} warns that \emph{any} shaping function that is not of the potential-based form will change optimal policies in at least some MDP. A classic counterexample: suppose the shaping bonus $F(s,a,s') = +1$ for all transitions, regardless of any potential. This uniformly inflates all rewards, which leaves the optimal policy unchanged in fully discounted settings but distorts the relative value of short and long episodes. More seriously, non-potential bonuses such as action-dependent terms (e.g., bonuses for visiting novel states in curiosity-driven exploration) \emph{do} alter the optimal policy in general, which may be intentional (exploration) but must be understood as a deliberate change in objective, not a neutral augmentation.
+\end{remark}
+
+\subsection{Designing Potential Functions: Examples}
+
+The theorem guarantees policy-invariance for any $\Phi$, but the \emph{speed} of learning depends critically on how well $\Phi$ encodes useful prior knowledge. Three standard constructions illustrate the design space.
+
+\begin{example}[Goal-distance potential in a gridworld]
+\label{ex:grid-potential}
+Consider a $5\times 5$ gridworld with goal state $g$. Define $\Phi(s) = -d(s, g)$, where $d$ is the Manhattan distance to the goal. The shaping bonus for a transition from $s$ to $s'$ is
+\[
+F(s, s') = \gamma(-d(s',g)) - (-d(s,g)) = d(s,g) - \gamma\,d(s',g).
+\]
+When the agent moves closer to the goal ($d(s',g) < d(s,g)$) and $\gamma \approx 1$, this bonus is approximately $d(s,g) - d(s',g) > 0$. Moving away from the goal yields a negative bonus. This gently guides the agent toward the goal without changing what the agent ultimately learns to do.
+
+Numerically: suppose $\gamma = 0.99$, $d(s,g) = 4$, $d(s',g) = 3$. Then $F = 4 - 0.99 \cdot 3 = 4 - 2.97 = 1.03$. For the same agent moving away: $d(s',g) = 5$, $F = 4 - 0.99 \cdot 5 = 4 - 4.95 = -0.95$. The bonus signal is commensurate in magnitude with the true terminal reward of~$+1$, providing dense guidance throughout the episode.
+\end{example}
+
+\begin{example}[Value-function potential]
+\label{ex:vf-potential}
+If one has access to an approximate value function $\hat{V}$ (perhaps from a simpler, related MDP or from a pretrained model), setting $\Phi = \hat{V}$ yields shaping bonuses that encode the agent's prior beliefs about state quality. In the language model setting, this is precisely the role of the \emph{reference model}: the SFT policy provides an implicit estimate of which continuations are high-quality, and the KL penalty can be interpreted as a potential-based regularisation. We return to this connection in Section~\ref{sec:overoptimization}.
+\end{example}
+
+\begin{example}[Learned potential from a critic]
+\label{ex:critic-potential}
+In actor-critic methods (Chapter~\ref{ch:actor-critic}), the critic $V_\phi$ is itself trained concurrently with the policy. Setting $\Phi = V_\phi$ and computing shaping bonuses on the fly corresponds exactly to the advantage-function formulation: the TD error $\delta_t = R_{t+1} + \gamma V_\phi(S_{t+1}) - V_\phi(S_t)$ is a potential-based shaping bonus added to the immediate reward before being used as the policy gradient signal. This reveals that advantage-based policy gradients are, in a precise sense, using a learned potential function as their shaping bonus.
+\end{example}
+
+% ===========================================================
+\section{From Hand-Crafted to Learned Rewards}
+\label{sec:reward-hacking}
+
+\subsection{The Limits of Manual Reward Design}
+
+Even with the protection of potential-based shaping, the design of a correct reward function for complex tasks is extremely difficult. The practitioner faces a fundamental asymmetry: specifying what good behaviour \emph{looks like} is easy, but encoding it precisely as a scalar function of states and actions is hard. For robotics, one must decide whether to reward joint torques, end-effector positions, task completion, energy efficiency, and safety constraints simultaneously, and then hand-tune their relative weights. For a conversational agent, the notions of \emph{helpfulness}, \emph{harmlessness}, and \emph{honesty} are intuitive to humans but deeply non-trivial to quantify.
+
+\index{reward hacking}
+\textbf{Reward hacking}\index{reward hacking} is the phenomenon whereby an agent discovers a policy that achieves a high numerical reward without satisfying the designer's intent. The specification gaming literature (Krakovna et al., 2020) documents hundreds of examples across domains. In RL for games, agents have learned to die repeatedly to avoid losing score, to exploit physics bugs for infinite speed, and to pause the game clock to prevent time-limited penalties. In robotics, a simulated hand learned to position itself between a sensor and a task object so that the task appeared complete to the sensor while no real progress had been made.
+
+\subsection{Reward Hacking in Language Models}
+
+The same failure modes appear, perhaps even more acutely, in language model alignment, where the reward function is not even hand-designed but is itself a neural network trained on noisy human judgements.
+
+\index{verbosity bias}
+\textbf{Verbosity bias}: annotators judging pairs of responses tend to perceive longer, more detailed responses as higher quality, even when additional length adds no information. A reward model trained on such data will assign higher scores to longer responses. When the language model is optimised against this proxy reward, it learns to pad its answers with repetitive qualifications and boilerplate summaries\,---\,a policy that maximises the proxy while degrading genuine helpfulness.
+
+\textbf{Sycophancy}\index{sycophancy}: human annotators are susceptible to social desirability bias, preferring responses that agree with their stated opinions over responses that correct their errors. A reward model internalising this pattern will rate agreement-seeking responses highly, leading the optimised policy to tell users what they want to hear rather than what is true.
+
+\textbf{Format exploitation}: reward models trained on responses from human writers may inadvertently associate markdown formatting (bullet points, bold headers, code blocks) with high quality, simply because human-written demonstrations tend to be well-formatted. The optimised policy then applies heavy formatting even where it is inappropriate, such as formatting a brief factual answer as a bulleted list.
+
+These examples motivate a fundamental shift in strategy: rather than trying to encode the reward function a priori, we \emph{learn} it from human feedback. The remainder of this chapter develops the theoretical and practical machinery for doing so.
+
+% ===========================================================
+\section{The Bradley--Terry Model}
+\label{sec:bradley-terry}
+
+\subsection{Preference Data}
+
+The starting point for learning a reward function from humans is the observation that it is often easier for a human to say which of two responses is better than to assign an absolute numerical score to a single response. Comparative judgements are more reliable, more consistent across annotators, and less sensitive to the absolute calibration of individual raters.
+
+\index{preference data}
+Formally, suppose there exists a latent true reward function $r^* : \cS \times \cA \to \R$ (or, in the language model setting, $r^* : \mathcal{X} \times \mathcal{Y} \to \R$ where $\mathcal{X}$ is the space of prompts and $\mathcal{Y}$ is the space of responses). This function is not directly observable. Instead, a human annotator observes two responses $y_1$ and $y_2$ to a prompt $x$ and indicates a preference, denoted $y_1 \succ y_2$ (``$y_1$ is preferred to $y_2$'').
+
+\begin{definition}[Preference dataset]
+\label{def:preference-dataset}
+\index{preference dataset}
+A \textbf{preference dataset} is a collection
+\[
+\mathcal{D} = \bigl\{(x^{(i)},\, y_w^{(i)},\, y_l^{(i)})\bigr\}_{i=1}^{N},
+\]
+where $y_w^{(i)} \succ y_l^{(i)}$ indicates that the human annotator preferred $y_w^{(i)}$ (the ``winner'') over $y_l^{(i)}$ (the ``loser'') in response to prompt $x^{(i)}$.
+\end{definition}
+
+The goal is to train a parametric reward function $r_\psi : \mathcal{X} \times \mathcal{Y} \to \R$ such that $r_\psi(x, y_w) > r_\psi(x, y_l)$ on all pairs in $\mathcal{D}$, and, more importantly, that it generalises correctly to unseen prompts and responses.
+
+\subsection{The Bradley--Terry Preference Model}
+
+How should we model the probability that a human prefers $y_1$ over $y_2$? The most principled and widely used framework is the \textbf{Bradley--Terry model}\index{Bradley--Terry model} (Bradley and Terry, 1952), originally developed for ranking sports competitors and later adopted throughout statistics, economics, and machine learning.
+
+\begin{definition}[Bradley--Terry model]
+\label{def:bt-model}
+\index{Bradley--Terry model}
+The \textbf{Bradley--Terry model} postulates that the probability of preferring $y_1$ over $y_2$ given prompt $x$ depends only on the difference in latent qualities:
+\begin{equation}
+\label{eq:bt-model}
+\Prob(y_1 \succ y_2 \mid x) = \sigma\bigl(r^*(x, y_1) - r^*(x, y_2)\bigr),
+\end{equation}
+where $\sigma(z) = 1/(1 + e^{-z})$ is the logistic sigmoid function.
+\end{definition}
+
+\begin{tikzpicture}[
+  every node/.style={font=\small},
+  box/.style={draw, rounded corners=3pt, minimum width=2.2cm, minimum height=0.85cm, align=center},
+  prob/.style={draw, fill=gray!10, rounded corners=3pt, minimum width=2.6cm, minimum height=0.85cm, align=center},
+  arrow/.style={->, >=Stealth, thick}
+]
+  % Responses
+  \node[box, fill=blue!8] (y1) at (0, 1.4) {Response $y_1$\\$r^*(x,y_1)$};
+  \node[box, fill=red!8]  (y2) at (0,-1.4) {Response $y_2$\\$r^*(x,y_2)$};
+  % Difference
+  \node[box] (diff) at (3.8, 0) {$\Delta = r^*(x,y_1)$\\$- r^*(x,y_2)$};
+  % Sigmoid
+  \node[box] (sig)  at (7.4, 0) {$\sigma(\Delta)$};
+  % Probability
+  \node[prob] (pref) at (11, 0) {$\Prob(y_1 \succ y_2)$};
+
+  \draw[arrow] (y1.east) -- ++(0.7,0) |- (diff.west);
+  \draw[arrow] (y2.east) -- ++(0.7,0) |- (diff.west);
+  \draw[arrow] (diff) -- (sig);
+  \draw[arrow] (sig)  -- (pref);
+\end{tikzpicture}
+
+\begin{center}
+\small\textit{Figure: The Bradley--Terry preference model. The preference probability depends only on the difference in latent reward scores, passed through a sigmoid.}
+\end{center}
+
+The model has a clear probabilistic interpretation. When the two responses are equally good ($r^*(x,y_1) = r^*(x,y_2)$), the preference probability is $\sigma(0) = 1/2$: the annotator is indifferent. As the quality gap grows, the preference probability approaches~$1$ (or~$0$), reflecting increasing confidence. The sigmoid shape captures the saturation of human judgements: for very clear-cut pairs, the probability of preference is essentially certain regardless of the exact magnitude of the difference.
+
+\begin{proposition}[Properties of the Bradley--Terry model]
+\label{prop:bt-properties}
+The Bradley--Terry model~\eqref{eq:bt-model} satisfies:
+\begin{enumerate}
+  \item \textbf{Symmetry}: $\Prob(y_1 \succ y_2 \mid x) + \Prob(y_2 \succ y_1 \mid x) = 1$.
+  \item \textbf{Indifference at equality}: $r^*(x,y_1) = r^*(x,y_2) \implies \Prob(y_1 \succ y_2) = 1/2$.
+  \item \textbf{Monotonicity}: $\Prob(y_1 \succ y_2 \mid x)$ is strictly increasing in $r^*(x,y_1)$ and strictly decreasing in $r^*(x,y_2)$.
+  \item \textbf{Translation invariance}: $r^* \mapsto r^* + c$ for any constant $c$ leaves all preference probabilities unchanged. The reward function is therefore identified only up to an additive constant.
+\end{enumerate}
+\end{proposition}
+
+\begin{proof}
+(1) follows from the identity $\sigma(z) + \sigma(-z) = 1$. (2) follows from $\sigma(0) = 1/2$. (3) follows from $\sigma'(z) = \sigma(z)(1-\sigma(z)) > 0$ for all $z\in\R$. (4): substituting $r^*(x,y) + c$ for $r^*(x,y)$ gives $\sigma((r^*(x,y_1)+c) - (r^*(x,y_2)+c)) = \sigma(r^*(x,y_1)-r^*(x,y_2))$, which is unchanged.
+\end{proof}
+
+\subsection{Connection to Elo Ratings}
+
+\index{Elo rating}
+The Bradley--Terry model is closely related to the \textbf{Elo rating system} used in chess and other competitive games. In Elo, each player $i$ has a scalar rating $\rho_i$, and the probability that player~$i$ beats player~$j$ is modelled as $1/(1 + 10^{(\rho_j - \rho_i)/400})$. This is precisely the Bradley--Terry model with $r^* = \rho$ and the logistic function computed in base~$10$ with a scale factor of~$400$. The key difference is that Elo ratings are updated online after each match using a simple stochastic gradient step on the log-loss, whereas in reward modelling we perform batch gradient descent over all preference pairs simultaneously. Both approaches estimate the same underlying latent quality $r^*$ from pairwise comparisons.
+
+% ===========================================================
+\section{Preference Reward Models}
+\label{sec:preference-rm}
+
+\subsection{Maximum Likelihood Estimation}
+
+Given a preference dataset $\mathcal{D}$, we wish to fit a parametric model $r_\psi$ to approximate $r^*$. Under the Bradley--Terry assumption, the probability of observing the full dataset is
+\begin{equation}
+\label{eq:bt-likelihood}
+\mathcal{L}_{\text{lik}}(\psi)
+= \prod_{i=1}^{N} \sigma\!\bigl(r_\psi(x^{(i)}, y_w^{(i)}) - r_\psi(x^{(i)}, y_l^{(i)})\bigr).
+\end{equation}
+Maximising the likelihood is equivalent to minimising the negative log-likelihood.
+
+\begin{definition}[Preference reward model loss]
+\label{def:rm-loss}
+\index{reward model loss}
+The \textbf{preference reward model loss} is
+\begin{equation}
+\label{eq:rm-loss}
+\boxed{
+\mathcal{L}_{\mathrm{RM}}(\psi)
+= -\frac{1}{N}\sum_{i=1}^{N}
+\log \sigma\!\bigl(r_\psi(x^{(i)}, y_w^{(i)}) - r_\psi(x^{(i)}, y_l^{(i)})\bigr).
+}
+\end{equation}
+\end{definition}
+
+This is exactly the binary cross-entropy loss with label~$1$ (``winner is preferred'') and predicted probability $\hat{p}_i = \sigma(r_\psi(x^{(i)}, y_w^{(i)}) - r_\psi(x^{(i)}, y_l^{(i)}))$. Training the reward model is therefore a standard binary classification problem: the model must correctly rank the preferred response above the dispreferred one.
+
+\begin{proposition}[Gradient structure of $\mathcal{L}_{\mathrm{RM}}$]
+\label{prop:rm-gradient}
+For a single pair $(x, y_w, y_l)$, let $\Delta = r_\psi(x,y_w) - r_\psi(x,y_l)$. Then
+\[
+\frac{\partial \mathcal{L}_{\mathrm{RM}}}{\partial r_\psi(x,y_w)} = -\sigma(-\Delta) < 0, \qquad
+\frac{\partial \mathcal{L}_{\mathrm{RM}}}{\partial r_\psi(x,y_l)} = +\sigma(-\Delta) > 0.
+\]
+Gradient descent therefore \emph{increases} $r_\psi(x,y_w)$ and \emph{decreases} $r_\psi(x,y_l)$, pushing the scores apart. The step size $\sigma(-\Delta) = 1 - \sigma(\Delta)$ is large when the current gap is small (the pair is hard) and small when the gap is already large (the pair is easy). This is the standard behaviour of logistic regression.
+\end{proposition}
+
+\begin{proof}
+$\mathcal{L} = -\log\sigma(\Delta)$. Differentiating with respect to $\Delta$: $\partial\mathcal{L}/\partial\Delta = -\sigma(-\Delta)$. Since $\partial\Delta/\partial r_\psi(x,y_w) = +1$ and $\partial\Delta/\partial r_\psi(x,y_l) = -1$, the result follows by the chain rule.
+\end{proof}
+
+\subsection{Architecture Choices}
+
+A preference reward model $r_\psi$ is typically built on top of a pre-trained language model. The canonical architecture initialises $r_\psi$ from the SFT checkpoint\,---\,the same supervised fine-tuned model used as the starting point for RL. A linear projection layer $W \in \R^{d \times 1}$ is added on top of the transformer, taking as input the hidden state at the final token position (typically the \texttt{[EOS]} token) and outputting a scalar score.
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Why initialise from SFT?} The reward model must evaluate responses in the same format as the SFT model generates them. Initialising from a base LM that has not seen instruction-following data leads to a reward model that poorly understands the content it is supposed to evaluate.
+  \item \textbf{Why use the EOS token?} By the time the model processes the \texttt{[EOS]} token, the self-attention mechanism has allowed every position to attend to every other position. The EOS hidden state therefore encodes a compressed representation of the entire response, making it the natural extraction point for a scalar quality estimate.
+  \item \textbf{Scale invariance}: the reward function is identified only up to an additive constant (Proposition~\ref{prop:bt-properties}). In practice, scores are normalised to have zero mean and unit variance over the training batch, which stabilises training and ensures the KL penalty (Section~\ref{sec:overoptimization}) operates at a consistent scale.
+\end{itemize}
+
+\subsection{Practical Training Procedure}
+
+\begin{algorithm}[ht]
+\caption{Preference Reward Model Training}
+\label{alg:rm-training}
+\KwIn{SFT checkpoint $\pi_{\mathrm{SFT}}$; preference dataset $\mathcal{D}$; learning rate $\alpha$; batch size $B$; epochs $E$}
+\KwOut{Trained reward model $r_\psi$}
+Initialise $r_\psi \leftarrow \pi_{\mathrm{SFT}}$ + random linear head $W \in \R^{d\times 1}$\;
+\For{$e = 1, \ldots, E$}{
+  \For{each mini-batch $\{(x^{(i)}, y_w^{(i)}, y_l^{(i)})\}_{i=1}^{B} \subset \mathcal{D}$}{
+    Compute $s_w^{(i)} \leftarrow r_\psi(x^{(i)}, y_w^{(i)})$ and $s_l^{(i)} \leftarrow r_\psi(x^{(i)}, y_l^{(i)})$ for all $i$\;
+    Compute loss $\mathcal{L} \leftarrow -\frac{1}{B}\sum_{i=1}^B \log \sigma(s_w^{(i)} - s_l^{(i)})$\;
+    $\psi \leftarrow \psi - \alpha\,\nabla_\psi\,\mathcal{L}$\;
+    Monitor $\mathrm{Acc} = \frac{1}{B}\sum_i \ind[s_w^{(i)} > s_l^{(i)}]$\;
+  }
+}
+\Return $r_\psi$
+\end{algorithm}
+
+In practice, $y_w$ and $y_l$ are concatenated along the batch dimension so that both are processed in a single forward pass, halving the number of transformer forward passes compared to a naïve two-pass implementation. Well-trained preference reward models typically achieve held-out pairwise accuracy of 70--80\%. Perfect accuracy is impossible because human annotations contain genuine noise: different annotators disagree, and even the same annotator may be inconsistent across sessions.
+
+% ===========================================================
+\section{Outcome Reward Models (ORM)}
+\label{sec:orm}
+
+\subsection{Sparse Terminal Rewards}
+
+The preference reward model of Section~\ref{sec:preference-rm} assigns a single scalar to a complete response $(x, y)$. This is an instance of a broader class of \textbf{outcome reward models}\index{outcome reward model (ORM)} (ORM): models that evaluate only the final outcome of a trajectory, with zero reward at all intermediate steps.
+
+\begin{definition}[Outcome reward model]
+\label{def:orm}
+\index{outcome reward model (ORM)}
+An \textbf{outcome reward model} (ORM) is a reward function $r_{\mathrm{ORM}} : \mathcal{X} \times \mathcal{Y} \to \R$ that assigns a scalar to the complete response $y$, with zero reward at every intermediate generation step:
+\[
+R_t = 0 \text{ for } t < T, \qquad R_T = r_{\mathrm{ORM}}(x, y).
+\]
+\end{definition}
+
+ORMs are the natural choice when the quality of a response can only be evaluated once the full response is available. They arise in at least three distinct settings.
+
+\textbf{1. Preference-based RLHF.} As derived in Section~\ref{sec:preference-rm}, the output of the Bradley--Terry-based preference reward model is a single scalar per response. This is an ORM by construction.
+
+\textbf{2. Verified-correct tasks.} For mathematical problem solving, coding, and factual question answering, a response is either correct or not: the generated answer matches the reference, or it does not. One can train a binary classifier $r_{\mathrm{ORM}}(x, y) \in \{0, 1\}$ that checks whether the final answer is correct. This provides a clean, objective ORM that avoids the noise inherent in human annotations.
+
+\textbf{3. Monte Carlo value estimation.} In the Monte Carlo (MC) framework of Chapter~\ref{ch:mc}, value estimates are obtained by rolling out complete trajectories from each state and averaging the returns. An ORM in the language model setting corresponds precisely to a Monte Carlo return: the full sequence is generated, the terminal reward is observed, and the value of each intermediate state is estimated by averaging over many such rollouts. This connection is exact: the ORM reward signal is the zero-intermediate-reward, terminal-reward MC return.
+
+\subsection{When to Use ORMs}
+
+ORMs are preferred when:
+\begin{itemize}[leftmargin=*]
+  \item The correctness of intermediate steps is difficult or expensive to assess.
+  \item A reliable automated verifier is available (e.g., a symbolic math checker or a unit-test runner).
+  \item The task horizon is short enough that the sparse terminal reward does not lead to intractable credit assignment.
+\end{itemize}
+
+The principal limitation of ORMs is precisely the credit-assignment problem highlighted in Chapter~\ref{ch:td}: an erroneous token early in the response contributes to the failure of the entire response, but receives only an indirect signal through the terminal reward after many intervening tokens. Process reward models, introduced next, address this limitation by providing dense intermediate signals.
+
+% ===========================================================
+\section{Process Reward Models (PRM)}
+\label{sec:prm}
+
+\subsection{Step-Level Supervision}
+
+Rather than evaluating only the final response, a \textbf{process reward model}\index{process reward model (PRM)} (PRM) assigns a reward to each intermediate step in the generation. In the context of multi-step mathematical reasoning, a step corresponds to a line of a solution (a sentence, a logical deduction, or an algebraic manipulation). More generally, in language model RL, a step may correspond to a sentence, a paragraph, or even an individual token.
+
+\begin{definition}[Process reward model]
+\label{def:prm}
+\index{process reward model (PRM)}
+A \textbf{process reward model} (PRM) assigns a scalar score to each step $k = 1, \ldots, K$ in a multi-step solution $y = (y_1, \ldots, y_K)$:
+\[
+r_{\mathrm{PRM}}(x, y_{1:k}) \in \R \quad \text{for each } k = 1, \ldots, K.
+\]
+The reward at step $k$ reflects the quality or correctness of the partial solution $(y_1, \ldots, y_k)$ given prompt $x$.
+\end{definition}
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  node distance=0.4cm and 1.6cm,
+  every node/.style={font=\small},
+  stepbox/.style={draw, rounded corners=2pt, minimum width=1.5cm, minimum height=0.7cm, fill=blue!6},
+  reward/.style={draw, circle, minimum size=0.55cm, inner sep=1pt, font=\tiny},
+  arrow/.style={->, >=Stealth}
+]
+  % ORM row
+  \node[font=\footnotesize\bfseries] (orm-label) at (-1.0, 1.0) {ORM};
+  \node[stepbox] (o1) at (1.0, 1.0)  {Step 1};
+  \node[stepbox] (o2) at (2.8, 1.0)  {Step 2};
+  \node[stepbox] (o3) at (4.6, 1.0)  {Step 3};
+  \node[stepbox] (o4) at (6.4, 1.0)  {Step 4};
+  \node[reward, fill=green!20] (or4) at (8.0, 1.0) {$r$};
+  \draw[arrow] (o1) -- (o2); \draw[arrow] (o2) -- (o3); \draw[arrow] (o3) -- (o4);
+  \draw[arrow] (o4) -- (or4);
+  \draw[dashed, gray] (o1.south) -- ++(0,-0.15) node[below, gray, font=\tiny] {$0$};
+  \draw[dashed, gray] (o2.south) -- ++(0,-0.15) node[below, gray, font=\tiny] {$0$};
+  \draw[dashed, gray] (o3.south) -- ++(0,-0.15) node[below, gray, font=\tiny] {$0$};
+
+  % PRM row
+  \node[font=\footnotesize\bfseries] (prm-label) at (-1.0,-1.0) {PRM};
+  \node[stepbox] (p1) at (1.0,-1.0)  {Step 1};
+  \node[stepbox] (p2) at (2.8,-1.0)  {Step 2};
+  \node[stepbox] (p3) at (4.6,-1.0)  {Step 3};
+  \node[stepbox] (p4) at (6.4,-1.0)  {Step 4};
+  \node[reward, fill=green!20]  (pr1) at (1.0,-2.1)  {$r_1$};
+  \node[reward, fill=yellow!30] (pr2) at (2.8,-2.1)  {$r_2$};
+  \node[reward, fill=red!20]    (pr3) at (4.6,-2.1)  {$r_3$};
+  \node[reward, fill=green!20]  (pr4) at (6.4,-2.1)  {$r_4$};
+  \draw[arrow] (p1) -- (p2); \draw[arrow] (p2) -- (p3); \draw[arrow] (p3) -- (p4);
+  \draw[arrow] (p1) -- (pr1); \draw[arrow] (p2) -- (pr2);
+  \draw[arrow] (p3) -- (pr3); \draw[arrow] (p4) -- (pr4);
+\end{tikzpicture}
+\caption{ORM vs.\ PRM signal structure. An ORM assigns a single terminal reward (top); a PRM assigns a reward to every step (bottom). Step colours indicate quality: green = correct, yellow = uncertain, red = incorrect.}
+\label{fig:orm-prm}
+\end{figure}
+
+\subsection{Training Process Reward Models}
+
+Training a PRM requires \emph{step-level} annotations: for each step in a solution, an annotator (human or automated) indicates whether the step is correct. Let $c_k \in \{0, 1\}$ be the correctness label for step $k$. The PRM is trained to predict the probability that step $k$ is correct:
+\begin{equation}
+\label{eq:prm-loss}
+\mathcal{L}_{\mathrm{PRM}}(\psi) = -\frac{1}{N}\sum_{i=1}^{N}\frac{1}{K^{(i)}}\sum_{k=1}^{K^{(i)}} \Bigl[c_k^{(i)}\log r_\psi(x^{(i)}, y_{1:k}^{(i)}) + (1-c_k^{(i)})\log(1 - r_\psi(x^{(i)}, y_{1:k}^{(i)}))\Bigr],
+\end{equation}
+where $N$ is the number of solutions and $K^{(i)}$ is the number of steps in solution $i$.
+
+\begin{example}[PRM800K dataset]
+\label{ex:prm800k}
+\index{PRM800K}
+The PRM800K dataset (Lightman et al., 2023) is the most widely used benchmark for training and evaluating PRMs in mathematical reasoning. It contains approximately $800{,}000$ step-level human annotations on solutions to problems from the MATH dataset, a collection of competition-level mathematics problems across seven difficulty levels. Each step in each solution is labelled as \emph{positive} (the step is correct and advances the solution), \emph{negative} (the step contains an error), or \emph{neutral} (the step is irrelevant or duplicated). A PRM trained on PRM800K learns to assign a high probability of correctness to logically valid derivation steps and a low probability to erroneous steps, regardless of whether the final answer happens to be correct.
+
+Crucially, PRM800K demonstrates that step-level supervision provides signal that ORM cannot: a solution may reach the correct final answer via an incorrect intermediate step (lucky errors), or may contain all correct steps but arrive at the wrong answer due to an arithmetic mistake in the last line. An ORM would assign high reward to the first solution and low reward to the second, despite the second demonstrating better mathematical reasoning.
+\end{example}
+
+\subsection{Using PRMs for Inference-Time Search}
+
+Beyond serving as a reward signal during RL training, PRMs are particularly powerful at inference time. Given a prompt $x$, one can generate multiple candidate solutions using beam search or best-of-$n$ sampling, then rank them using the PRM. Several strategies have proved effective:
+
+\begin{description}[leftmargin=!,labelwidth=3.5cm]
+  \item[Best-of-$n$ reranking] Generate $n$ complete solutions, score each with the ORM or aggregate PRM scores, and return the highest-scoring solution. With a good PRM, this is substantially more effective than using an ORM for reranking, because the PRM penalises solutions that arrive at the correct answer via faulty reasoning.
+  \item[Step-level beam search] At each step, generate $K$ candidate continuations, score each with the PRM, and expand only the top-$B$ beams. This is computationally expensive but explores the solution space much more efficiently than flat sampling.
+  \item[Process reward guided tree search] Use the PRM as a value function in a tree search (e.g., Monte Carlo Tree Search) over reasoning steps. This allows the model to backtrack and explore alternative reasoning paths when an early step receives a low PRM score.
+\end{description}
+
+\subsection{ORM vs.\ PRM: A Comparison}
+
+\begin{table}[ht]
+\centering
+\caption{Comparison of Outcome Reward Models (ORM) and Process Reward Models (PRM).}
+\label{tab:orm-prm}
+\small
+\begin{tabular}{@{}lp{4.5cm}p{4.5cm}@{}}
+\toprule
+\textbf{Property} & \textbf{ORM} & \textbf{PRM} \\
+\midrule
+Granularity & Outcome only & Per-step \\
+Annotation cost & Low & High \\
+Credit assignment & Sparse & Dense \\
+Lucky errors & Rewards any correct answer & Penalises wrong steps \\
+Step robustness & Low & High \\
+Search quality & Moderate & Strong \\
+Data needed & Correct/incorrect outcomes & Step correctness labels \\
+Applications & Preference RLHF, verification & Math reasoning, code \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ===========================================================
+\section{Training Objectives and Practical Considerations}
+\label{sec:rm-objectives}
+
+\subsection{Margin-Based Loss Variants}
+
+The standard reward model loss~\eqref{eq:rm-loss} pushes $r_\psi(x, y_w)$ above $r_\psi(x, y_l)$ without specifying by how much. A natural extension is to require a minimum margin $m > 0$:
+
+\begin{equation}
+\label{eq:rm-margin-loss}
+\mathcal{L}_{\mathrm{RM}}^{(m)}(\psi)
+= -\frac{1}{N}\sum_{i=1}^{N}
+\log \sigma\!\bigl(r_\psi(x^{(i)}, y_w^{(i)}) - r_\psi(x^{(i)}, y_l^{(i)}) - m\bigr).
+\end{equation}
+
+The margin ensures that pairs that are correctly ranked but with a small gap still contribute a non-trivial loss, encouraging the model to produce confidently separated scores. This is analogous to the margin in support-vector machines.
+
+A related variant associates a continuous confidence score $\delta^{(i)} \in [0, 1]$ with each preference pair, reflecting the annotator's certainty. Pairs on which annotators strongly agreed are assigned higher $\delta$:
+\begin{equation}
+\label{eq:rm-weighted-loss}
+\mathcal{L}_{\mathrm{RM}}^{(\delta)}(\psi)
+= -\frac{1}{\sum_i \delta^{(i)}}\sum_{i=1}^{N}
+\delta^{(i)}\,\log \sigma\!\bigl(r_\psi(x^{(i)}, y_w^{(i)}) - r_\psi(x^{(i)}, y_l^{(i)})\bigr).
+\end{equation}
+This down-weights ambiguous preference pairs, reducing the influence of noise in the annotation process.
+
+\subsection{Label Smoothing}
+
+Human preference annotations are noisy: annotators sometimes make mistakes, and some pairs are genuinely ambiguous. Label smoothing regularises the reward model by replacing the hard targets $\{0,1\}$ with soft targets $\{\epsilon/2, 1 - \epsilon/2\}$ for a small smoothing parameter $\epsilon \in (0, 0.2]$:
+\begin{equation}
+\label{eq:rm-label-smooth}
+\mathcal{L}_{\mathrm{RM}}^{(\epsilon)}(\psi)
+= -\frac{1}{N}\sum_{i=1}^{N}
+\Bigl[(1-\tfrac{\epsilon}{2})\log\sigma(\Delta^{(i)}) + \tfrac{\epsilon}{2}\log\sigma(-\Delta^{(i)})\Bigr],
+\end{equation}
+where $\Delta^{(i)} = r_\psi(x^{(i)}, y_w^{(i)}) - r_\psi(x^{(i)}, y_l^{(i)})$. Label smoothing prevents the reward model from driving $\Delta^{(i)} \to +\infty$ (which would make $\log\sigma(\Delta^{(i)}) \to 0$ and the loss zero) and induces calibrated probability estimates.
+
+\subsection{Data Quality and Annotation Protocols}
+
+The quality of the reward model is bounded by the quality of the preference data. Several practical considerations are essential.
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Annotator agreement}: Preference pairs on which annotators strongly disagree should be filtered or down-weighted. Inter-annotator agreement (e.g., Cohen's $\kappa > 0.4$) is a minimum bar for reliable supervision.
+  \item \textbf{Prompt diversity}: A reward model trained on a narrow prompt distribution will generalise poorly. Preference data should cover diverse topics, formats, and user intents.
+  \item \textbf{Response diversity}: If both $y_w$ and $y_l$ are sampled from a strong policy, the preference gap may be small and the signal noisy. Including comparisons against significantly weaker baselines (e.g., the pre-SFT base model) can provide easier training signal.
+  \item \textbf{Held-out evaluation}: Reward model accuracy should always be reported on a held-out set from the same annotation process, and ideally also on an independently collected evaluation set to guard against overfitting to annotator idiosyncrasies.
+\end{itemize}
+
+\subsection{Evaluation Metrics}
+
+The primary evaluation metric for a preference reward model is \textbf{pairwise accuracy}\index{pairwise accuracy}:
+\begin{equation}
+\label{eq:rm-accuracy}
+\mathrm{Acc} = \frac{1}{N_{\mathrm{eval}}}\sum_{i=1}^{N_{\mathrm{eval}}} \ind\!\bigl[r_\psi(x^{(i)}, y_w^{(i)}) > r_\psi(x^{(i)}, y_l^{(i)})\bigr].
+\end{equation}
+
+Beyond pairwise accuracy, one may compute the \textbf{Pearson correlation} between reward model scores and independent human ratings, and \textbf{ranking metrics} such as Kendall's $\tau$ or Spearman's $\rho$ over lists of responses ranked by their reward model scores. For ORMs used in verified tasks, accuracy against a symbolic verifier serves as a direct ground-truth check.
+
+% ===========================================================
+\section{Reward Overoptimization}
+\label{sec:overoptimization}
+
+\subsection{Goodhart's Law in Reinforcement Learning}
+
+\index{Goodhart's Law}
+\index{reward overoptimisation}
+The trained reward model $r_\psi$ is a proxy for the true human preference $r^*$. When a policy is optimised against $r_\psi$ using RL, it will inevitably exploit any discrepancy between $r_\psi$ and $r^*$. This is an instance of \textbf{Goodhart's Law}: \emph{when a measure becomes a target, it ceases to be a good measure.}
+
+\begin{definition}[Reward overoptimization]
+\label{def:overoptimization}
+\index{reward overoptimisation}
+\textbf{Reward overoptimization} (or \emph{reward hacking} in the proxy sense) occurs when a policy $\pi_\theta$ achieves high proxy reward $\E[r_\psi(x,y)]$ but low true reward $\E[r^*(x,y)]$. It is characterised by the existence of a KL budget $d^*$ such that:
+\begin{align}
+\frac{d}{d\,d}\E[r^*(x,y)] &> 0 \quad \text{for } d < d^*, \\
+\frac{d}{d\,d}\E[r^*(x,y)] &< 0 \quad \text{for } d > d^*,
+\end{align}
+where $d = \KL{\pi_\theta}{\pi_{\mathrm{ref}}}$ measures the divergence from the reference policy.
+\end{definition}
+
+In words: as the policy is optimised further and further against the proxy reward (increasing KL divergence from the reference), the true quality initially improves, reaches a peak at $d^*$, and then degrades. The proxy reward, meanwhile, continues to improve monotonically. This creates a dangerous disconnect: standard RL training metrics look good even as the model is becoming worse by the measure that actually matters.
+
+\begin{example}[Scaling behaviour of overoptimization]
+\label{ex:overopt-scaling}
+Gao et al.\ (2023) characterised this phenomenon empirically and found that the gold reward $r^*$ as a function of KL divergence $d$ follows an approximately concave curve of the form
+\[
+r^*(d) \approx \alpha\,\sqrt{d} - \beta\,d,
+\]
+for positive constants $\alpha$ and $\beta$ that depend on the size and quality of the reward model. The optimal KL budget is $d^* = (\alpha/(2\beta))^2$. Crucially, $\beta$ grows as the reward model becomes \emph{smaller} relative to the policy being optimised: a weak reward model leads to faster overoptimization. This suggests that reward model capacity should scale with policy capacity.
+\end{example}
+
+\subsection{KL Penalty as Regularisation}
+
+The standard remedy for reward overoptimization is to add a KL divergence penalty to the objective, constraining the policy to remain close to the reference (SFT) policy:
+
+\begin{definition}[KL-regularised RLHF objective]
+\label{def:kl-rlhf}
+\index{KL regularisation}
+The \textbf{KL-regularised RLHF objective} is
+\begin{equation}
+\label{eq:kl-rlhf}
+J_{\mathrm{RLHF}}(\theta)
+= \E_{x \sim \mathcal{D},\; y \sim \pi_\theta(\cdot|x)}\!\bigl[r_\psi(x, y)\bigr]
+- \beta\,\KL{\pi_\theta(\cdot|x)}{\pi_{\mathrm{ref}}(\cdot|x)},
+\end{equation}
+where $\beta > 0$ is the KL coefficient and $\pi_{\mathrm{ref}}$ is the SFT policy.
+\end{definition}
+
+In PPO implementations (Chapter~\ref{ch:practical-rlhf}), the KL penalty is typically incorporated into the per-token reward signal:
+\begin{equation}
+\label{eq:kl-token-reward}
+r(x, y) = r_\psi(x, y) - \beta\,\log\frac{\pi_\theta(y \mid x)}{\pi_{\mathrm{ref}}(y \mid x)},
+\end{equation}
+which is equivalent to adding $-\beta\log(\pi_\theta/\pi_{\mathrm{ref}})$ as a per-token shaping bonus. This is precisely a potential-based shaping function with $\Phi(s) = -\beta\log\pi_{\mathrm{ref}}(a|s)$\,---\,connecting the KL penalty back to the potential-based framework of Section~\ref{sec:reward-shaping}.
+
+\begin{theorem}[Optimal policy under KL regularisation]
+\label{thm:kl-optimal-policy}
+\index{KL regularisation!optimal policy}
+The policy that maximises~\eqref{eq:kl-rlhf} pointwise (for each $x$) is
+\begin{equation}
+\label{eq:kl-optimal-policy}
+\pi^*(y \mid x) = \frac{\pi_{\mathrm{ref}}(y \mid x)\,\exp\!\bigl(r_\psi(x, y)/\beta\bigr)}{Z(x)},
+\end{equation}
+where $Z(x) = \sum_y \pi_{\mathrm{ref}}(y \mid x)\,\exp(r_\psi(x, y)/\beta)$ is the partition function.
+\end{theorem}
+
+\begin{proof}
+Fix $x$ and write the objective as a functional of $\pi(\cdot|x)$:
+\[
+\sum_y \pi(y|x)\,r_\psi(x,y) - \beta\sum_y \pi(y|x)\log\frac{\pi(y|x)}{\pi_{\mathrm{ref}}(y|x)}.
+\]
+Combining terms:
+\[
+= -\beta\sum_y \pi(y|x)\left[\log\frac{\pi(y|x)}{\pi_{\mathrm{ref}}(y|x)} - \frac{r_\psi(x,y)}{\beta}\right]
+= -\beta\,\KL{\pi(\cdot|x)}{\tilde\pi(\cdot|x)} + \text{const},
+\]
+where $\tilde\pi(y|x) \propto \pi_{\mathrm{ref}}(y|x)\exp(r_\psi(x,y)/\beta)$. The KL is minimised (and the objective maximised) when $\pi = \tilde\pi$, giving~\eqref{eq:kl-optimal-policy}.
+\end{proof}
+
+The formula~\eqref{eq:kl-optimal-policy} reveals the role of $\beta$ as a \emph{temperature} parameter:
+\begin{itemize}[leftmargin=*]
+  \item As $\beta \to 0$: $\pi^*$ concentrates all mass on the response maximising $r_\psi$. The policy is entirely governed by the proxy reward and reward hacking is maximal.
+  \item As $\beta \to \infty$: $\pi^* \to \pi_{\mathrm{ref}}$. The RL fine-tuning has no effect; the policy remains at the SFT checkpoint.
+  \item At moderate $\beta \in [0.01, 0.5]$: the policy interpolates between the SFT prior and the reward-maximising solution. Empirically, this range captures the peak of the gold-reward curve (Definition~\ref{def:overoptimization}).
+\end{itemize}
+
+\begin{remark}[Connection to DPO]
+\label{rem:dpo-connection}
+The optimal policy formula~\eqref{eq:kl-optimal-policy} can be rearranged to express $r_\psi$ in terms of $\pi^*$, $\pi_{\mathrm{ref}}$, and $Z(x)$:
+\[
+r_\psi(x, y) = \beta\log\frac{\pi^*(y|x)}{\pi_{\mathrm{ref}}(y|x)} + \beta\log Z(x).
+\]
+This identity is the foundation of the Direct Preference Optimisation (DPO) algorithm: by substituting this expression for $r_\psi$ into the Bradley--Terry preference model~\eqref{eq:bt-model} and using the fact that $\log Z(x)$ cancels in the difference, DPO bypasses the reward model entirely and optimises the policy directly on preference data. We derive DPO in detail in Chapter~\ref{ch:practical-rlhf}.
+\end{remark}
+
+% ===========================================================
+\section{Summary and Connections}
+\label{sec:ch10-summary}
+
+This chapter developed two complementary frameworks for the reward design problem.
+
+\textbf{Potential-based reward shaping} (Section~\ref{sec:reward-shaping}) provides a theoretically grounded method for augmenting a given reward function to provide denser learning signal without altering the set of optimal policies. The key insight is the telescoping identity~\eqref{eq:shaping-return}: a potential-based bonus $F = \gamma\Phi(s') - \Phi(s)$ contributes exactly $-\Phi(s_0)$ to the cumulative return, a state-dependent constant that leaves advantage functions unchanged. This principle underlies the advantage formulation in actor-critic methods and the per-token KL penalty in RLHF.
+
+\textbf{Learned reward models} (Sections~\ref{sec:reward-hacking}--\ref{sec:overoptimization}) address the more challenging problem of inferring the reward from human feedback. The Bradley--Terry model provides a principled probabilistic framework for preference data, leading to the cross-entropy preference reward model loss~\eqref{eq:rm-loss}. Outcome reward models (ORM) provide a single terminal signal, analogous to Monte Carlo returns; process reward models (PRM) provide dense step-level supervision that resolves ambiguities that ORMs cannot. Both are subject to Goodhart's Law: prolonged optimisation against any proxy reward eventually degrades true performance. The KL-regularised objective~\eqref{eq:kl-rlhf} and its optimal solution~\eqref{eq:kl-optimal-policy} provide the principled remedy.
+
+The central connections to subsequent chapters are the following.
+
+\begin{description}[leftmargin=!,labelwidth=3.5cm]
+  \item[Chapter~\ref{ch:practical-rlhf} (PPO)] The reward model $r_\psi$ trained here serves directly as the reward signal in PPO fine-tuning. The per-token reward~\eqref{eq:kl-token-reward} is exactly the reward computed at each step in the PPO advantage estimator.
+  \item[Chapter~\ref{ch:practical-rlhf} (DPO)] The optimal-policy reparametrisation~\eqref{eq:kl-optimal-policy} leads directly to the DPO objective, which eliminates the need to train a separate reward model.
+  \item[Chapter~\ref{ch:practical-rlhf} (GRPO)] Group relative policy optimisation uses a verifier-based ORM as its reward signal and normalises rewards within a group of sampled responses, exploiting the group statistics to estimate advantage without a learned critic.
+\end{description}
+
+\begin{remark}[Historical note]
+\label{rem:history}
+Potential-based reward shaping was introduced by Ng, Harada, and Russell at ICML 1999 and quickly became a standard tool in the RL practitioner's toolkit. The Bradley--Terry model dates to 1952 and was introduced to statistics long before its adoption in machine learning. Its application to RLHF was popularised by Christiano et al.\ (2017), who showed that a preference reward model trained on a small number of human comparisons could guide RL in the Atari and robotics settings. The distinction between ORM and PRM was crystallised by Lightman et al.\ (2023) in the context of mathematical reasoning, with the PRM800K dataset providing the first large-scale step-level annotation resource.
+\end{remark}
+
+% ===========================================================
+\section*{Exercises}
+\addcontentsline{toc}{section}{Exercises}
+
+\begin{exercise}
+\label{ex:shaping-1}
+Let $\cS = \{s_1, s_2, s_3\}$ be the state space of a deterministic MDP with $\gamma = 0.9$ and true reward $R(s_1 \to s_2) = 0$, $R(s_2 \to s_3) = 0$, $R(s_3) = +1$ (terminal). Define a potential function $\Phi(s_1) = 0$, $\Phi(s_2) = 0.5$, $\Phi(s_3) = 1.0$.
+\begin{enumerate}
+  \item Compute the shaping bonus $F(s_1, s_2)$ and $F(s_2, s_3)$.
+  \item Compute the shaped return $\tilde{G}_0$ starting from $s_1$ and verify that $\tilde{G}_0 = G_0 - \Phi(s_1)$.
+  \item Does the shaped MDP have the same optimal policy as the original? Explain using Theorem~\ref{thm:shaping}.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:shaping-non-potential}
+Construct an explicit MDP and a non-potential shaping function $F(s,a,s')$ that changes the optimal policy. Your MDP should have at least two actions in at least one state, and you should identify which action was optimal before shaping and which becomes optimal after shaping. Verify that $F$ cannot be written in the form $\gamma\Phi(s') - \Phi(s)$ for any $\Phi$.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:bt-properties}
+Prove all four properties of the Bradley--Terry model listed in Proposition~\ref{prop:bt-properties}. For property~4 (translation invariance), explain why this means the reward function is not uniquely identifiable from preference data alone, and describe what additional constraint one could impose to make it identifiable.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:rm-loss-worked}
+Suppose a reward model currently assigns scores $r_\psi(x, y_w) = 1.2$ and $r_\psi(x, y_l) = 1.8$ for a single preference pair.
+\begin{enumerate}
+  \item Compute the loss $\mathcal{L}_{\mathrm{RM}}$ for this pair.
+  \item Compute the gradients $\partial\mathcal{L}/\partial r_\psi(x,y_w)$ and $\partial\mathcal{L}/\partial r_\psi(x,y_l)$ and describe the direction of the update.
+  \item How does the gradient magnitude change as the gap $r_\psi(x,y_w) - r_\psi(x,y_l)$ grows from $-0.6$ to $+5$? Sketch the gradient as a function of the gap.
+  \item Now suppose we add a margin $m = 1.0$. Recompute the loss and gradient. Does the gradient increase or decrease? Explain intuitively.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:orm-prm}
+A language model is asked to solve the following arithmetic problem: ``If a train travels at 60 mph for 2.5 hours and then at 80 mph for 1.5 hours, what is the total distance?'' The model generates the following three-step solution:
+\begin{enumerate}
+  \item[Step 1:] Distance in first segment: $60 \times 2.5 = 150$ miles.
+  \item[Step 2:] Distance in second segment: $80 \times 2 = 160$ miles. [\emph{Error: should be $1.5$ hours}]
+  \item[Step 3:] Total: $150 + 160 = 310$ miles. [\emph{Error propagated from Step 2; correct answer is 270}]
+\end{enumerate}
+\begin{enumerate}
+  \item What reward would an ORM assign if the verifier checks only the final answer? What would a PRM assign?
+  \item How does ORM vs.\ PRM differ in their treatment of this solution compared to a solution that arrives at 270 via a different (but correct) three-step path?
+  \item Describe a training scenario where an ORM would systematically overestimate the quality of a model that makes systematic Step-2 errors.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:kl-optimal-policy}
+Use Theorem~\ref{thm:kl-optimal-policy} to answer the following questions about the optimal policy $\pi^*$ under KL regularisation.
+\begin{enumerate}
+  \item Show that $\log\pi^*(y|x) - \log\pi_{\mathrm{ref}}(y|x) = r_\psi(x,y)/\beta - \log Z(x)$.
+  \item Using the result of (a), express $r_\psi(x,y)$ entirely in terms of $\pi^*$, $\pi_{\mathrm{ref}}$, and $Z(x)$. This is the identity used in the DPO derivation.
+  \item Verify that substituting $r_\psi(x,y) - r_\psi(x,y')$ into the Bradley--Terry formula~\eqref{eq:bt-model} causes $\log Z(x)$ to cancel, leaving the preference probability in terms of $\pi^*$ and $\pi_{\mathrm{ref}}$ alone.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:goodhart}
+Formulate the reward overoptimization phenomenon as a bias-variance problem in the following sense: the proxy reward model $r_\psi$ is an estimate of the true reward $r^*$ with some generalisation error $\varepsilon = \E[(r_\psi(x,y) - r^*(x,y))^2]$.
+\begin{enumerate}
+  \item Argue that the gap $\E_{\pi_\theta}[r_\psi] - \E_{\pi_\theta}[r^*]$ (the proxy-gold gap at policy $\pi_\theta$) grows with the KL divergence $\KL{\pi_\theta}{\pi_{\mathrm{ref}}}$.
+  \item Suppose the reward model generalisation error $\varepsilon$ decreases as more preference data is collected. How does this affect the optimal KL budget $d^*$?
+  \item Describe a practical stopping criterion for PPO fine-tuning that uses both the proxy reward and a held-out set of human evaluations to detect when the proxy-gold gap becomes unacceptably large.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:label-smoothing}
+Starting from the label-smoothed loss~\eqref{eq:rm-label-smooth}, show that it is equivalent to the standard loss~\eqref{eq:rm-loss} perturbed by the term $\frac{\epsilon}{2}\log\sigma(-\Delta)/(1-\epsilon/2)$, and interpret this perturbation as a regulariser that prevents the reward scores from becoming arbitrarily large.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:potential-kl}
+Show that the per-token KL penalty in~\eqref{eq:kl-token-reward} can be interpreted as a potential-based shaping bonus in the token-level MDP of Definition~\ref{sec:reward-hacking}. Specifically:
+\begin{enumerate}
+  \item Define a potential $\Phi(s_t) = \beta\log\pi_{\mathrm{ref}}(a_t | s_t)$ evaluated at each state-action pair in the MDP.
+  \item Compute the shaping bonus $F(s_t, a_t, s_{t+1}) = \gamma\Phi(s_{t+1}) - \Phi(s_t)$ and compare it to the per-token KL term.
+  \item Conclude that the KL-regularised RLHF objective is equivalent to an unregularised RL problem on a shaped MDP, and state what consequence Theorem~\ref{thm:shaping} has for this equivalence.
+\end{enumerate}
+\end{exercise}

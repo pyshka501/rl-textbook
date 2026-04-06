@@ -1,0 +1,194 @@
+% ============================================================
+%  NOTATION TABLE
+%  Placed after the Table of Contents in frontmatter.
+% ============================================================
+
+\chapter*{Notation}
+\addcontentsline{toc}{chapter}{Notation}
+
+The following tables collect the symbols used consistently throughout the
+book.  Where a symbol carries a meaning specific to a single chapter, that
+chapter introduces it explicitly; the entries here cover the globally
+recurring conventions.
+
+% ----------------------------------------------------------------
+\section*{General Mathematics}
+% ----------------------------------------------------------------
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Symbol} & \textbf{Meaning} \\
+\midrule
+$\R$, $\R^n$ & Real numbers; $n$-dimensional real vector space \\
+$\N$         & Natural numbers $\{0,1,2,\ldots\}$ \\
+$\Z$         & Integers \\
+$[n]$        & Index set $\{1,2,\ldots,n\}$ \\
+$|S|$        & Cardinality of set $S$ \\
+$\langle x, y\rangle$ & Inner product of vectors $x$ and $y$ \\
+$\|x\|$, $\|x\|_p$   & Euclidean (2-)norm; $\ell^p$ norm \\
+$\|A\|_F$    & Frobenius norm of matrix $A$ \\
+$A^\top$     & Transpose of matrix $A$ \\
+$A^{-1}$     & Inverse of square matrix $A$ \\
+$\nabla_\theta f$ & Gradient of $f$ with respect to $\theta$ \\
+$\nabla^2_\theta f$ & Hessian of $f$ with respect to $\theta$ \\
+$\partial_x f$ & Partial derivative of $f$ with respect to $x$ \\
+$f \circ g$  & Function composition: $(f\circ g)(x)=f(g(x))$ \\
+$\propto$    & Proportional to (up to a normalising constant) \\
+$\ind\{A\}$  & Indicator function: $1$ if event $A$ holds, else $0$ \\
+$\log$       & Natural logarithm (base $e$) \\
+$\log_2$     & Binary logarithm (base $2$) \\
+$\exp(x)$    & Exponential function $e^x$ \\
+$[x]_+$      & Positive part: $\max(x,0)$ \\
+$\lfloor x \rfloor$, $\lceil x \rceil$ & Floor and ceiling functions \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ----------------------------------------------------------------
+\section*{Probability and Statistics}
+% ----------------------------------------------------------------
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Symbol} & \textbf{Meaning} \\
+\midrule
+$\Prob(A)$          & Probability of event $A$ \\
+$\Prob(A\mid B)$    & Conditional probability of $A$ given $B$ \\
+$\E[X]$             & Expected value of random variable $X$ \\
+$\E[X \mid Y]$      & Conditional expectation of $X$ given $Y$ \\
+$\Var[X]$           & Variance of $X$: $\E[X^2]-(\E[X])^2$ \\
+$\Cov[X,Y]$         & Covariance of $X$ and $Y$ \\
+$p(x)$              & Probability density or mass function \\
+$p(x \mid y)$       & Conditional density/mass of $x$ given $y$ \\
+$X \sim p$          & $X$ is distributed according to $p$ \\
+$X \perp Y$         & $X$ and $Y$ are independent \\
+$\cN(\mu,\sigma^2)$ & Normal distribution with mean $\mu$, variance $\sigma^2$ \\
+$\mathrm{Bernoulli}(p)$ & Bernoulli distribution with success probability $p$ \\
+$\mathrm{Cat}(\mathbf{p})$ & Categorical distribution with probability vector $\mathbf{p}$ \\
+$\KL{p}{q}$         & Kullback-Leibler divergence from $q$ to $p$ \\
+$H(p)$              & Shannon entropy of distribution $p$ \\
+$H(p,q)$            & Cross-entropy between $p$ and $q$ \\
+$I(X;Y)$            & Mutual information between $X$ and $Y$ \\
+$\sigma(x)$         & Sigmoid function $1/(1+e^{-x})$ \\
+$\mathrm{softmax}(\mathbf{z})_i$ & $e^{z_i}/\sum_j e^{z_j}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ----------------------------------------------------------------
+\section*{Reinforcement Learning Core}
+% ----------------------------------------------------------------
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Symbol} & \textbf{Meaning} \\
+\midrule
+$\cS$               & State space \\
+$\cA$               & Action space \\
+$\cR$               & Reward space (also used for regret) \\
+$\cM$               & MDP tuple $(\cS,\cA,P,R,\gamma)$ \\
+$P(s'\mid s,a)$     & Transition probability function \\
+$R(s,a)$, $r(s,a)$  & Expected reward; reward signal \\
+$s_t, a_t, r_t$     & State, action, reward at time step $t$ \\
+$\tau$              & Trajectory (episode): $(s_0,a_0,r_0,s_1,\ldots)$ \\
+$T$                 & Horizon (episode length); may be $\infty$ \\
+$\gamma \in [0,1)$  & Discount factor \\
+$G_t$               & Return from time $t$: $\sum_{k=0}^{\infty}\gamma^k r_{t+k+1}$ \\
+$\pi(a\mid s)$      & Stochastic policy \\
+$\pi(s)$            & Deterministic policy (maps $s$ to an action) \\
+$\pi^*$             & Optimal policy \\
+$V^\pi(s)$          & State-value function under policy $\pi$ \\
+$Q^\pi(s,a)$        & Action-value (Q-)function under policy $\pi$ \\
+$V^*(s)$, $Q^*(s,a)$ & Optimal value functions \\
+$A^\pi(s,a)$        & Advantage function $Q^\pi(s,a)-V^\pi(s)$ \\
+$\delta_t$          & TD error at time $t$ \\
+$\alpha$            & Learning rate / step size \\
+$\epsilon$          & Exploration rate (e.g.\ $\epsilon$-greedy) \\
+$\lambda$           & Eligibility-trace decay (TD($\lambda$)) \\
+$n$                 & $n$-step look-ahead \\
+$\theta, \phi, \psi$  & Parameter vectors (policy, value, reward model) \\
+$\pi_\theta$        & Policy parameterised by $\theta$ \\
+$V_\phi$, $Q_\phi$  & Value function parameterised by $\phi$ \\
+$\mathcal{T}^\pi$   & Bellman operator for policy $\pi$ \\
+$\mathcal{T}^*$     & Bellman optimality operator \\
+$d^\pi(s)$          & Stationary state distribution under $\pi$ \\
+$J(\theta)$         & Policy objective (expected return) \\
+$\hat{A}_t$         & Estimated advantage at time $t$ \\
+$\hat{g}$           & Stochastic policy-gradient estimate \\
+$L^\mathrm{CLIP}$   & PPO clipped surrogate objective \\
+$\rho_t(\theta)$    & Probability ratio $\pi_\theta(a_t|s_t)/\pi_{\theta_\mathrm{old}}(a_t|s_t)$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ----------------------------------------------------------------
+\section*{Language Model Notation}
+% ----------------------------------------------------------------
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Symbol} & \textbf{Meaning} \\
+\midrule
+$\cV$                    & Vocabulary (set of tokens) \\
+$x$                      & Prompt / input sequence \\
+$y$                      & Response / output sequence \\
+$y_t$                    & $t$-th token of response $y$ \\
+$y_{<t}$                 & Response tokens before position $t$ \\
+$|y|$                    & Length of response $y$ (in tokens) \\
+$\mathrm{eos}$           & End-of-sequence token \\
+$\pi_\theta(y\mid x)$    & Language model policy (autoregressive) \\
+$\pi_\mathrm{ref}(y\mid x)$ & Reference (supervised) policy \\
+$r_\psi(x,y)$            & Reward model with parameters $\psi$ \\
+$\beta$                  & KL penalty coefficient \\
+$\cD_\mathrm{pref}$      & Human preference dataset \\
+$y^+$, $y^-$             & Preferred and rejected response \\
+$p^*(y^+\succ y^-)$      & Human preference probability \\
+$Z(x)$                   & Partition function for optimal LM policy \\
+$\ell_\mathrm{DPO}$      & DPO training loss \\
+$g_i$                    & $i$-th sampled completion (GRPO) \\
+$\hat{r}_i$              & Normalised reward for group $i$ (GRPO) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ----------------------------------------------------------------
+\section*{Common Abbreviations}
+% ----------------------------------------------------------------
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Abbreviation} & \textbf{Full Form} \\
+\midrule
+RL     & Reinforcement Learning \\
+MDP    & Markov Decision Process \\
+POMDP  & Partially Observable MDP \\
+TD     & Temporal Difference \\
+MC     & Monte Carlo \\
+DP     & Dynamic Programming \\
+GPI    & Generalised Policy Iteration \\
+VFA    & Value Function Approximation \\
+DQN    & Deep Q-Network \\
+DDPG   & Deep Deterministic Policy Gradient \\
+A2C/A3C & Advantage Actor-Critic / Asynchronous A3C \\
+PPO    & Proximal Policy Optimisation \\
+TRPO   & Trust Region Policy Optimisation \\
+GAE    & Generalised Advantage Estimation \\
+SGD    & Stochastic Gradient Descent \\
+SFT    & Supervised Fine-Tuning \\
+RLHF   & Reinforcement Learning from Human Feedback \\
+DPO    & Direct Preference Optimisation \\
+GRPO   & Group Relative Policy Optimisation \\
+RLVR   & RL with Verifiable Rewards \\
+CoT    & Chain-of-Thought \\
+LLM    & Large Language Model \\
+KL     & Kullback-Leibler (divergence) \\
+i.i.d. & Independent and Identically Distributed \\
+w.r.t. & With Respect To \\
+\bottomrule
+\end{tabular}
+\end{center}

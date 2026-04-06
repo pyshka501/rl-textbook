@@ -1,0 +1,275 @@
+\chapter{Introduction to Reinforcement Learning}
+\label{ch:intro}
+
+\begin{quote}
+\itshape
+An agent learns not by being told the correct action, but by discovering\,---\,through trial and interaction\,---\,which actions yield the greatest long-term reward.
+\end{quote}
+
+\bigskip
+
+Reinforcement learning (RL) is the branch of machine learning concerned with \emph{sequential decision-making under uncertainty}.  Unlike supervised learning, where a fixed dataset of labelled examples is provided in advance, an RL agent must interact with an \emph{environment}, choose \emph{actions}, observe their consequences, and use the resulting \emph{rewards} to improve its behaviour over time.
+
+This chapter introduces the core ideas, motivations, and challenges of reinforcement learning, and situates it among the broader landscape of machine learning paradigms.
+
+
+% ===========================================================
+\section{What Is Reinforcement Learning?}
+\label{sec:what-is-rl}
+
+\begin{definition}[Reinforcement Learning]
+\label{def:rl}
+\index{reinforcement learning}
+\textbf{Reinforcement learning} is a computational approach to learning from interaction, in which an \emph{agent} takes actions in an \emph{environment}, receives \emph{rewards}, and seeks to maximise the cumulative reward over a horizon of interaction.
+\end{definition}
+
+The defining characteristic of RL is that the agent never receives explicit instruction about which action is ``correct.''  Instead, it receives only \emph{evaluative feedback}\index{evaluative feedback}: a scalar signal indicating how good (or bad) the outcome of its behaviour turned out to be.  The agent's task is therefore not to imitate a given labelling, but to \emph{discover a strategy}\,---\,called a \emph{policy}\index{policy}\,---\,that maximises long-term performance.
+
+To formalise the quality of an agent's behaviour, we introduce the \emph{return}\index{return} (also called \emph{cumulative discounted reward}), which aggregates future rewards starting from time step $t$:
+\begin{equation}
+\label{eq:return-ch1}
+G_t = \sum_{k=0}^{\infty}\gamma^k R_{t+k+1},
+\end{equation}
+where $\gamma\in[0,1)$ is the \emph{discount factor}\index{discount factor} and $R_{t+k+1}$ is the reward received $k+1$ steps after time $t$.  Following the standard convention, at time step~$t$ the agent selects action~$A_t$, and the environment then returns reward~$R_{t+1}$ and next state~$S_{t+1}$.
+
+If the agent's policy is denoted by $\pi$, the standard RL objective is
+\begin{equation}
+\label{eq:rl-objective}
+J(\pi)=\E_{\pi}[G_0].
+\end{equation}
+In words, we seek a policy $\pi$ that maximises the expected return~\eqref{eq:rl-objective}.
+
+\begin{remark}
+\label{rem:episodic-continuing}
+In \emph{episodic tasks}\index{episodic task}, the sum in~\eqref{eq:return-ch1} terminates at a terminal state.  In \emph{continuing tasks}\index{continuing task}, the horizon is infinite and the discount factor $\gamma<1$ ensures that the sum remains finite.
+\end{remark}
+
+
+% ===========================================================
+\section{Key Challenges in Reinforcement Learning}
+\label{sec:rl-challenges}
+
+Even in the simplest RL settings, several fundamental challenges arise:
+
+\begin{itemize}[leftmargin=*]
+\item \textbf{Delayed reward.}\index{delayed reward}
+The consequence of an action may not become apparent until many time steps later.  A chess move that seems innocuous in the opening may determine the outcome of the game fifty moves later.
+
+\item \textbf{Exploration versus exploitation.}\index{exploration versus exploitation}
+The agent must balance \emph{exploration}\,---\,trying unfamiliar actions to discover potentially better strategies\,---\,with \emph{exploitation}\,---\,repeating actions that already appear rewarding.  This tension is the central theme of Chapter~\ref{ch:bandits}.
+
+\item \textbf{Distribution shift induced by the policy.}\index{distribution shift}
+Unlike supervised learning, where the training distribution is typically fixed, in RL the agent's own policy determines which states and transitions it will observe next.  Changing the policy changes the data.
+
+\item \textbf{Correlated data.}
+Successive observations along a trajectory are temporally correlated and not independently drawn, which complicates the application of standard statistical learning guarantees.
+\end{itemize}
+
+\begin{remark}
+It is precisely the dependence of data on the current policy that makes RL substantially more sensitive to errors during early training.  A poor initial strategy may prevent the agent from ever visiting regions of the state--action space where superior behaviour could be discovered.
+\end{remark}
+
+
+% ===========================================================
+\section{A Brief History of Reinforcement Learning}
+\label{sec:history}
+\index{history of RL}
+
+The intellectual roots of RL lie at the intersection of several fields:
+
+\begin{description}[leftmargin=!,labelwidth=3.2cm]
+\item[Psychology (1900s--1950s)]
+Edward Thorndike's \emph{Law of Effect} (1911)\index{Law of Effect} stated that actions followed by satisfying consequences tend to be repeated.  This idea of learning from reward signals is the conceptual ancestor of RL.
+
+\item[Optimal control (1950s)]
+Richard Bellman formulated the theory of \emph{dynamic programming}\index{dynamic programming} and introduced the \emph{Bellman equation}\index{Bellman equation}, which remains the backbone of RL algorithms to this day.
+
+\item[Stochastic approximation]
+Robbins and Monro (1951) developed iterative methods for finding roots of stochastic equations, providing the mathematical foundation for incremental learning rules.
+
+\item[Temporal-difference learning (1980s--1990s)]
+Sutton's TD($\lambda$) algorithm (1988)\index{TD($\lambda$)} unified Monte Carlo and dynamic programming ideas.  Watkins introduced Q-learning (1989)\index{Q-learning}, and Tesauro's TD-Gammon (1992)\index{TD-Gammon} demonstrated that RL could achieve expert-level play in backgammon.
+
+\item[Deep RL (2013--present)]
+The combination of deep neural networks with RL led to a series of breakthroughs: DQN playing Atari games at human level (Mnih et al., 2013, 2015)\index{DQN}, AlphaGo defeating the world champion in Go (Silver et al., 2016, 2017)\index{AlphaGo}, and continuous-control algorithms such as DDPG, SAC, and PPO enabling robotic manipulation.
+
+\item[RL for language models (2020--present)]
+The application of RL techniques\,---\,particularly PPO-based RLHF\index{RLHF}\,---\,to align large language models (Ouyang et al., 2022; OpenAI, 2023) has made RL a central tool in modern AI.  Methods such as DPO\index{DPO} (Rafailov et al., 2023) and GRPO\index{GRPO} (Shao et al., 2024) continue to expand the RL--LLM frontier.
+\end{description}
+
+
+% ===========================================================
+\section{Reinforcement Learning and Other Machine Learning Paradigms}
+\label{sec:rl-vs-ml}
+\index{supervised learning}\index{unsupervised learning}\index{imitation learning}
+
+To appreciate the distinctive features of RL, it is helpful to compare it with other core paradigms of machine learning.
+
+\begin{table}[ht]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{@{}p{2.6cm}p{2.9cm}p{3.2cm}p{3.6cm}@{}}
+\toprule
+\textbf{Paradigm} & \textbf{Data} & \textbf{Objective} & \textbf{Key Challenge} \\
+\midrule
+Supervised Learning &
+input--label pairs $(x,y)$ &
+minimise prediction error &
+generalisation, label noise, distribution shift \\
+\addlinespace
+Unsupervised Learning &
+unlabelled data $x$ &
+discover structure, density, or representations &
+choice of quality metric; interpretation \\
+\addlinespace
+Imitation Learning &
+expert demonstrations &
+reproduce the expert's policy &
+covariate shift; compounding errors along trajectories \\
+\addlinespace
+Reinforcement Learning &
+trajectories of interaction with an environment &
+maximise expected return &
+exploration, delayed reward, training instability \\
+\bottomrule
+\end{tabular}
+\caption{Comparison of reinforcement learning with other major machine learning paradigms.}
+\label{tab:rl-vs-ml}
+\end{table}
+
+The most salient distinction is that in RL the training distribution is \emph{not fixed}: the agent's own policy determines which data it will collect next.  When the policy changes, so does the distribution of observations.
+
+From a practical standpoint, RL is often more demanding than supervised learning for several reasons:
+\begin{itemize}[leftmargin=*]
+\item Data collection is expensive: it requires simulation, interaction with a physical system, or a large number of episodes.
+\item The reward signal is frequently noisy, sparse, or poorly designed.
+\item Using neural-network function approximators introduces instabilities that require specialised stabilisation techniques (see the ``deadly triad'' in Chapter~\ref{ch:value-approx}).
+\end{itemize}
+
+
+% ===========================================================
+\section{Applications of Reinforcement Learning}
+\label{sec:applications}
+\index{applications}
+
+Reinforcement learning has been successfully applied in a remarkable variety of domains:
+
+\begin{description}[leftmargin=!,labelwidth=3.5cm]
+\item[Game playing]
+Board games (Go, chess, shogi via AlphaZero), video games (Atari, StarCraft~II, Dota~2), and card games (poker via Libratus, Pluribus).
+
+\item[Robotics]
+Locomotion, dexterous manipulation, and sim-to-real transfer using PPO, SAC, and model-based methods.
+
+\item[Recommendation systems]
+Optimising long-term user engagement rather than immediate click-through rates.
+
+\item[Autonomous driving]
+End-to-end learning of driving policies from simulation and real-world interaction.
+
+\item[Operations research]
+Inventory management, dynamic pricing, resource allocation, and combinatorial optimisation.
+
+\item[Healthcare]
+Personalised treatment policies, adaptive clinical trials, and drug dosing optimisation.
+
+\item[Language model alignment]
+RLHF for instruction-following, safety, and helpfulness; DPO, GRPO, and related methods for aligning LLMs with human preferences.  This application is the focus of Part~III of this book.
+\end{description}
+
+
+% ===========================================================
+\section{The Agent--Environment Interface}
+\label{sec:agent-env}
+\index{agent--environment interface}
+
+At the highest level, every RL problem involves two entities:
+
+\begin{enumerate}
+\item The \textbf{agent}\index{agent}: the learner and decision-maker.
+\item The \textbf{environment}\index{environment}: everything the agent interacts with.
+\end{enumerate}
+
+At each discrete time step $t=0,1,2,\dots$, the following cycle repeats:
+\begin{enumerate}
+\item The agent observes the current state $S_t$ (or observation $O_t$ in partially observable settings).
+\item The agent selects an action $A_t$ according to its policy $\pi$.
+\item The environment transitions to a new state $S_{t+1}$ and emits a scalar reward $R_{t+1}$.
+\end{enumerate}
+
+This interaction produces a \emph{trajectory}\index{trajectory}:
+\begin{equation}
+\label{eq:trajectory}
+S_0, A_0, R_1, S_1, A_1, R_2, S_2, A_2, R_3, \dots
+\end{equation}
+
+The formal mathematical framework for this interaction\,---\,the \emph{Markov Decision Process} (MDP)\,---\,is the subject of Chapter~\ref{ch:mdp}.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  block/.style={draw, rounded corners, minimum width=2.2cm, minimum height=1cm, align=center},
+  arr/.style={-{Stealth[length=3mm]}, thick},
+  every node/.style={font=\small}
+]
+\node[block] (agent) {Agent};
+\node[block, right=4cm of agent] (env) {Environment};
+\draw[arr] ([yshift= 6pt]agent.east) -- node[above]{$A_t$} ([yshift= 6pt]env.west);
+\draw[arr] ([yshift=-3pt]env.west) -- node[below]{$R_{t+1},\; S_{t+1}$} ([yshift=-3pt]agent.east);
+\end{tikzpicture}
+\caption{The agent--environment interaction loop.  At each step the agent sends an action $A_t$ and receives a reward $R_{t+1}$ and the next state $S_{t+1}$.}
+\label{fig:agent-env}
+\end{figure}
+
+
+% ===========================================================
+\section{Overview of the Book}
+\label{sec:book-overview}
+
+The remainder of this book is organised into four parts.
+
+\paragraph{Part~I: Foundations (Chapters~\ref{ch:bandits}--\ref{ch:td}).}
+We begin with the multi-armed bandit problem (Chapter~\ref{ch:bandits}), which introduces the exploration--exploitation trade-off in its purest form.  We then formalise the full RL setting via Markov Decision Processes (Chapter~\ref{ch:mdp}), develop exact solution methods based on dynamic programming (Chapter~\ref{ch:dp}), and introduce two families of sample-based algorithms: Monte Carlo methods (Chapter~\ref{ch:mc}) and temporal-difference learning (Chapter~\ref{ch:td}).
+
+\paragraph{Part~II: Function Approximation and Deep RL (Chapters~\ref{ch:value-approx}--\ref{ch:actor-critic}).}
+We address the challenge of scaling RL to large state and action spaces through function approximation (Chapter~\ref{ch:value-approx}), policy gradient methods (Chapter~\ref{ch:pg}), and actor-critic architectures culminating in PPO (Chapter~\ref{ch:actor-critic}).
+
+\paragraph{Part~III: RL for Language Models (Chapters~\ref{ch:reward-models}--\ref{ch:practical-rlhf}).}
+We apply the RL toolkit to the training and alignment of large language models, beginning with reward shaping and reward models (Chapter~\ref{ch:reward-models}), followed by the LLM training pipeline (Chapter~\ref{ch:lm-post-training}), DPO and direct alignment methods (Chapter~\ref{ch:dpo}), GRPO and online RL with verifiable rewards (Chapter~\ref{ch:grpo}), and practical RLHF engineering (Chapter~\ref{ch:practical-rlhf}).
+
+\paragraph{Part~IV: Frontiers (Chapters~\ref{ch:reasoning}--\ref{ch:open}).}
+We explore reasoning and reinforcement finetuning (Chapter~\ref{ch:reasoning}), multi-agent systems (Chapter~\ref{ch:agents}), and conclude with a survey of open problems and emerging research directions (Chapter~\ref{ch:open}).
+
+
+% ===========================================================
+\section*{Exercises}
+\addcontentsline{toc}{section}{Exercises}
+
+\begin{exercise}
+\label{ex:rl-examples}
+Identify three real-world problems that are naturally formulated as reinforcement learning tasks.  For each, describe the agent, the environment, the action space, and the reward signal.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:sl-vs-rl}
+Consider the task of teaching a robot to walk.  Explain why a supervised-learning approach (e.g.\ learning from pre-recorded trajectories of a walking expert) may fail, and why an RL approach may be more appropriate.  What role does the exploration--exploitation trade-off play?
+\end{exercise}
+
+\begin{exercise}
+\label{ex:discount}
+Show that for $\gamma\in[0,1)$ and bounded rewards $|R_t|\le R_{\max}$ for all $t$, the return~\eqref{eq:return-ch1} satisfies
+\[
+|G_t| \le \frac{R_{\max}}{1-\gamma}.
+\]
+\end{exercise}
+
+\begin{exercise}
+\label{ex:paradigm-compare}
+For each of the following tasks, determine which machine learning paradigm (supervised, unsupervised, imitation, or reinforcement learning) is most natural, and justify your answer:
+\begin{enumerate}[label=(\alph*)]
+\item Classifying emails as spam or not spam.
+\item Training a chatbot to be helpful and harmless using human preference data.
+\item Discovering customer segments from purchase histories.
+\item Teaching a self-driving car to navigate using recordings of expert drivers.
+\end{enumerate}
+\end{exercise}

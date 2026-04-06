@@ -1,0 +1,1144 @@
+% ===========================================================
+% Chapter 7: Value Function Approximation and Deep Reinforcement Learning
+% ===========================================================
+\chapter[Value Function Approximation]{Value Function Approximation and Deep Reinforcement Learning}
+\label{ch:value-approx}
+
+\begin{quote}
+\itshape
+The power of neural networks is not that they memorise; it is that they generalise.
+In reinforcement learning, this distinction separates methods that scale from methods that do not.
+\end{quote}
+
+\bigskip
+
+The preceding six chapters have built a rigorous foundation for reinforcement learning using tabular
+representations.  In Chapter~\ref{ch:mdp} we formalised the Markov decision process framework and
+derived the Bellman equations; in Chapter~\ref{ch:dp} we showed how dynamic programming solves them
+exactly given a model; and in Chapters~\ref{ch:mc} and \ref{ch:td} we developed Monte Carlo and
+temporal-difference methods that learn from experience without a model.  These algorithms possess
+well-understood convergence guarantees and clean mathematical structure.  Yet they all share one
+critical assumption: that we can store and update a separate numerical entry for every
+state\,---\,or every state--action pair\,---\,in the problem.
+
+This assumption breaks almost immediately in any realistic application.  An Atari game presents
+roughly $10^{120\,000}$ distinct screen configurations; a robotic arm moving in continuous joint
+space has an uncountably infinite state space; a language model must assign values to every possible
+sequence of tokens.  No computer, present or future, can store a table of that size.  Even if
+storage were unlimited, the generalisation properties of tabular methods are poor: learning that
+one game state is dangerous conveys no information whatsoever about a visually similar state.
+
+The solution is \emph{function approximation}\index{function approximation}: instead of storing one
+number per state, we learn a parameterised function $V_\mathbf{w}(s) \approx V^\pi(s)$ whose
+parameter count $d$ is vastly smaller than $|\cS|$.  The same set of parameters simultaneously
+encodes information about all states, and updating the parameters after visiting one state
+automatically changes the predicted values of nearby states.  This is the mechanism of
+generalisation.
+
+This chapter develops function approximation systematically, from first principles to the deep
+neural network architectures that power modern reinforcement learning.  Section~\ref{sec:tabular-fail}
+quantifies the scalability problem.  Section~\ref{sec:linear-vfa} introduces linear function
+approximation, the simplest setting in which convergence can be proved rigorously.
+Section~\ref{sec:projected-bellman} analyses the projected Bellman equation, which characterises
+the fixed point of TD methods in function-approximation space.
+Section~\ref{sec:semi-gradient} examines semi-gradient methods and explains precisely why they are
+not true gradient methods.  Section~\ref{sec:deadly-triad} confronts the \emph{deadly triad}: the
+conjunction of function approximation, bootstrapping, and off-policy data that can cause divergence
+even with linear approximators.  Section~\ref{sec:dqn} presents Deep Q-Networks (DQN), the first
+algorithm to demonstrate human-level performance across many diverse tasks by stabilising deep RL
+training with two key engineering innovations.  Section~\ref{sec:dqn-extensions} surveys important
+algorithmic improvements built upon the DQN foundation.  Section~\ref{sec:convergence-vfa} surveys
+what convergence theory can and cannot say about nonlinear function approximation.  Finally,
+Section~\ref{sec:applications-vfa} discusses practical considerations that bridge theory and
+engineering.
+
+% ===========================================================
+\section{Why Tabular Methods Fail}
+\label{sec:tabular-fail}
+% ===========================================================
+
+\subsection{The Curse of Dimensionality}
+
+To understand the necessity of function approximation, we must first quantify how dramatically the
+state space grows with problem complexity.  In a tabular MDP with $|\cS|$ states and $|\cA|$
+actions, representing the action-value function $Q : \cS \times \cA \to \R$ requires storing
+$|\cS| \cdot |\cA|$ floating-point numbers.  For a small gridworld with $100$ cells and $4$ actions,
+that is $400$ numbers\,---\,trivial.  But the size of the state space is not a linear function of
+the problem's input dimensionality; it is exponential.
+
+\begin{definition}[Curse of dimensionality]
+\label{def:curse-dim}
+\index{curse of dimensionality}
+Let the state be described by $n$ features, each taking $k$ discrete values.  The total number of
+states is $k^n$.  The memory and sample complexity of tabular methods therefore grows
+\emph{exponentially} in the number of features $n$.  This phenomenon is called the
+\textbf{curse of dimensionality}.
+\end{definition}
+
+Three concrete domains make this vivid.
+
+\begin{example}[Atari video games]
+\label{ex:atari-states}
+\index{Atari}
+The Atari 2600 produces $210 \times 160$ pixel frames with $128$ colours per pixel.  Mnih
+et al.~(2015) preprocess frames to $84 \times 84$ greyscale and stack four consecutive frames to
+capture motion, giving an observation tensor with $84 \times 84 \times 4 = 28\,224$ values, each
+an integer in $\{0, \ldots, 255\}$.  The number of distinct observations is therefore at most
+$256^{28\,224}$, a number with roughly $68\,000$ decimal digits.  A tabular $Q$-function over
+this space is not merely impractical; it is conceptually absurd.  Yet DQN, using a convolutional
+neural network with $\sim 1.5$ million parameters, achieved superhuman performance on many of these
+games.  The network succeeds precisely because it generalises across visually similar frames.
+\end{example}
+
+\begin{example}[Continuous robotics]
+\label{ex:robotics-states}
+\index{robotics!state space}
+A simulated humanoid robot (e.g., the MuJoCo Humanoid-v4 environment) has a state vector
+$s \in \R^{376}$ comprising joint positions, joint velocities, and contact forces.  This state
+space is not merely large\,---\,it is continuous and uncountably infinite.  No discretisation
+scheme can reduce it to a manageable table without introducing severe approximation errors.
+Moreover, the action space is $\R^{17}$, so the $\argmax$ operation central to $Q$-learning
+becomes a continuous optimisation problem at every step.
+\end{example}
+
+\begin{example}[Language and text]
+\label{ex:language-states}
+\index{language models!state space}
+In applications of RL to language model fine-tuning (discussed further in
+Chapter~\ref{ch:practical-rlhf}), the state is the current token prefix\,---\,the entire
+conversation history up to the current step.  With a vocabulary of size $50\,000$ and a context
+window of $2\,048$ tokens, the number of possible prefixes is astronomically large.  Furthermore,
+the semantics of two prefixes differing by a single word can be nearly identical, so any useful
+representation must achieve semantic generalisation, not just syntactic.
+\end{example}
+
+\subsection{The Generalisation Argument}
+
+Beyond the pure storage problem, tabular methods have a fundamental statistical inefficiency: every
+state is treated as a completely separate object.  Learning that the value of state $s$ is high
+conveys no information about state $s'$, even if $s$ and $s'$ are visually identical up to the
+position of one pixel.  In the language of statistics, tabular methods have zero
+\emph{generalisation}: each entry must be estimated independently, from transitions that visit
+that specific state.
+
+In large state spaces, most states are visited at most once, or never at all, during any reasonable
+training run.  Tabular methods assign such states their initial values (often zero) indefinitely.
+Function approximation addresses this by sharing statistical strength across states: a visit to
+state $s$ implicitly updates the estimated values of all states $s'$ for which $\varphi(s')$ is
+similar to $\varphi(s)$, where $\varphi$ denotes the feature representation.  This
+\emph{implicit regularisation} is the core benefit of parameterised value functions.
+
+% ===========================================================
+\section{Linear Value Function Approximation}
+\label{sec:linear-vfa}
+% ===========================================================
+
+\subsection{Feature Vectors and the Linear Ansatz}
+
+The simplest parameterised approximation represents the value function as a linear combination of
+fixed features.
+
+\begin{definition}[Linear value function approximation]
+\label{def:linear-vfa}
+\index{linear value function approximation}
+Let $\varphi : \cS \to \R^d$ be a \textbf{feature map}\index{feature map} assigning each state a
+feature vector.  A \textbf{linear value function approximation} takes the form
+\begin{equation}
+\label{eq:linear-vfa}
+V_\mathbf{w}(s) = \mathbf{w}^\top \varphi(s) = \sum_{i=1}^d w_i \varphi_i(s),
+\end{equation}
+where $\mathbf{w} \in \R^d$ is the weight vector.  For action-value functions one uses features
+$\varphi(s, a) \in \R^d$ and writes $Q_\mathbf{w}(s, a) = \mathbf{w}^\top \varphi(s, a)$.
+\end{definition}
+
+The linear ansatz is attractive for three reasons.  First, it is the simplest possible
+parameterisation: the approximation is uniquely determined by $d$ real numbers regardless of how
+large $|\cS|$ is.  Second, many interesting feature maps can be designed by hand\,---\,tile
+codings, radial basis functions, polynomial bases, Fourier features\,---\,each encoding specific
+prior beliefs about the structure of the value function.  Third, and most importantly, linear
+function approximation is the setting where TD convergence can be established with mathematical
+rigour, as we will see in Section~\ref{sec:projected-bellman}.
+
+\begin{example}[Polynomial features for a one-dimensional corridor]
+\label{ex:poly-features}
+\index{polynomial features}
+Consider a corridor of $N = 1\,000$ discrete positions.  In the tabular case, $V^\pi$ requires
+$N = 1\,000$ parameters.  If, however, the true value function is smooth\,---\,which is likely if
+the reward is concentrated at one end and the discount factor is moderate\,---\,we can approximate
+it with the polynomial basis
+\[
+\varphi(s) = \bigl(1,\; s/N,\; (s/N)^2,\; (s/N)^3\bigr)^\top \in \R^4.
+\]
+This reduces the parameter count from $1\,000$ to $4$, at the cost of being unable to represent
+rapidly varying value functions exactly.  The approximation error incurred by restricting to this
+function class is called the \textbf{representation error}\index{representation error}, and it is
+unavoidable whenever the true value function lies outside the approximation family.
+\end{example}
+
+\subsection{Tile Coding}
+
+A particularly useful feature map for continuous state spaces is \emph{tile coding}%
+\index{tile coding}, developed by Sutton~(1996).  The state space $\R^n$ is covered by multiple
+overlapping grids, called \emph{tilings}.  For a given state $s$, exactly one tile in each tiling
+is active, giving a binary feature vector whose non-zero entries indicate which tile is active in
+each tiling.  If there are $m$ tilings each partitioning the space into $k$ tiles, the feature
+vector has dimension $mk$ and contains exactly $m$ ones.  The resulting linear approximation is
+equivalent to a lookup table of tile values, but the overlapping structure of the tilings provides
+smooth interpolation between nearby states.
+
+\subsection{Linear TD(0)}
+\label{subsec:linear-td}
+
+Recall from Chapter~\ref{ch:td} that TD(0) for policy evaluation maintains a value estimate and
+updates it after each transition $(S_t, A_t, R_{t+1}, S_{t+1})$ using the TD error
+\[
+\delta_t = R_{t+1} + \gamma V(S_{t+1}) - V(S_t).
+\]
+When $V$ is parameterised as $V_\mathbf{w}(s) = \mathbf{w}^\top \varphi(s)$, the natural
+extension is to update the weight vector in the direction that reduces the squared TD error.  This
+yields the \textbf{semi-gradient TD(0)}\index{semi-gradient TD(0)} update (analysed in detail in
+Section~\ref{sec:semi-gradient}):
+\begin{equation}
+\label{eq:linear-td-update}
+\mathbf{w} \leftarrow \mathbf{w} + \alpha\, \delta_t\, \varphi(S_t),
+\end{equation}
+where $\delta_t = R_{t+1} + \gamma \mathbf{w}^\top \varphi(S_{t+1}) - \mathbf{w}^\top \varphi(S_t)$.
+Observe that in the linear case $\nabla_\mathbf{w} V_\mathbf{w}(S_t) = \varphi(S_t)$, so
+\eqref{eq:linear-td-update} is the semi-gradient step applied to $V_\mathbf{w}$.
+
+A critical property of this update is that changing $\mathbf{w}$ affects \emph{all states
+simultaneously}: the value prediction at state $s'$ changes by $\alpha \delta_t \, \varphi(s')
+\cdot \varphi(S_t)$, proportional to how similar $s'$ is to $S_t$ under the feature inner product.
+This is the mechanism of generalisation in linear function approximation.
+
+\begin{theorem}[Convergence of linear TD(0) with on-policy sampling]
+\label{thm:linear-td-convergence}
+\index{linear TD(0)!convergence}
+Let $\pi$ be a fixed policy and let $\mu$ be its stationary distribution over $\cS$ (assumed
+unique and positive everywhere).  Assume the feature matrix $\Phi \in \R^{|\cS| \times d}$ has
+full column rank.  If samples $(S_t, R_{t+1}, S_{t+1})$ are drawn on-policy, i.e., $S_t \sim \mu$
+in steady state, and the step sizes satisfy $\sum_t \alpha_t = \infty$ and
+$\sum_t \alpha_t^2 < \infty$, then the linear TD(0) iterates $\mathbf{w}_t$ converge
+almost surely to a unique weight vector $\mathbf{w}_{\mathrm{TD}}$ satisfying the projected
+Bellman equation $\Phi \mathbf{w}_{\mathrm{TD}} = \Pi_\mu T^\pi (\Phi \mathbf{w}_{\mathrm{TD}})$
+(defined in Section~\ref{sec:projected-bellman}).
+\end{theorem}
+
+The proof of Theorem~\ref{thm:linear-td-convergence} relies on the theory of stochastic
+approximation and the contraction properties of the projected Bellman operator, which we now
+develop.
+
+% ===========================================================
+\section{The Projected Bellman Equation}
+\label{sec:projected-bellman}
+% ===========================================================
+
+\subsection{Geometry of Function Approximation}
+
+To understand what linear TD(0) actually converges to, we need to think geometrically.  The linear
+function class $\mathcal{F} = \{\Phi \mathbf{w} : \mathbf{w} \in \R^d\}$ is a $d$-dimensional
+subspace of $\R^{|\cS|}$ (identifying value functions with vectors indexed by states).  The
+Bellman operator $T^\pi$ maps any value function $v \in \R^{|\cS|}$ to a new function
+$T^\pi v$, but in general $T^\pi v \notin \mathcal{F}$ even when $v \in \mathcal{F}$.
+Consequently, TD methods operating within $\mathcal{F}$ cannot follow $T^\pi$ directly.
+
+The resolution is to \emph{project} $T^\pi v$ back onto $\mathcal{F}$ after each Bellman step.
+
+\begin{definition}[$\mu$-weighted inner product and projection]
+\label{def:mu-projection}
+\index{projection operator!$\mu$-weighted}
+Let $\mu : \cS \to (0, \infty)$ be a positive weighting (typically the on-policy stationary
+distribution of $\pi$).  Define the \textbf{$\mu$-weighted norm}\index{$\mu$-norm}
+\begin{equation}
+\label{eq:mu-norm}
+\|v\|_\mu^2 = \sum_{s \in \cS} \mu(s)\, v(s)^2 = \mathbf{v}^\top D_\mu \mathbf{v},
+\end{equation}
+where $D_\mu = \mathrm{diag}(\mu)$.  The \textbf{orthogonal projection} of $v$ onto
+$\mathcal{F}$ in this norm is
+\begin{equation}
+\label{eq:projection-def}
+\Pi_\mu v = \Phi\bigl(\Phi^\top D_\mu \Phi\bigr)^{-1} \Phi^\top D_\mu v
+= \argmin_{f \in \mathcal{F}} \|f - v\|_\mu.
+\end{equation}
+\end{definition}
+
+The matrix $\Pi_\mu = \Phi(\Phi^\top D_\mu \Phi)^{-1}\Phi^\top D_\mu$ is the orthogonal
+projector in the $\mu$-weighted inner product.  It is idempotent ($\Pi_\mu^2 = \Pi_\mu$) and
+satisfies $\|I - \Pi_\mu\|_\mu \leq 1$, meaning that projection can only bring a vector
+\emph{closer} to $\mathcal{F}$, never push it further away.
+
+\begin{definition}[Projected Bellman equation]
+\label{def:projected-bellman}
+\index{projected Bellman equation}
+The \textbf{projected Bellman equation} for policy $\pi$ is
+\begin{equation}
+\label{eq:projected-bellman}
+\hat{V} = \Pi_\mu T^\pi \hat{V}, \qquad \hat{V} \in \mathcal{F}.
+\end{equation}
+A solution $\hat{V} = \Phi \mathbf{w}_{\mathrm{TD}}$ is called the
+\textbf{TD fixed point}\index{TD fixed point}.
+\end{definition}
+
+The projected Bellman equation has a clear geometric interpretation: find a function in the
+approximation class $\mathcal{F}$ that, after one Bellman backup and re-projection, returns to
+itself.  It is the best we can hope for when exact Bellman consistency is unachievable within
+$\mathcal{F}$.
+
+\begin{example}[Projected Bellman equation with three states]
+\label{ex:three-state-projection}
+Suppose $|\cS| = 3$ with uniform weighting $\mu = (1/3, 1/3, 1/3)$, and our feature matrix is
+\[
+\Phi = \begin{pmatrix} 1 & 0 \\ 0 & 1 \\ 1 & 1 \end{pmatrix} \in \R^{3 \times 2}.
+\]
+The approximation family $\mathcal{F}$ has dimension $2$, so values at all three states cannot be
+set independently: $V(s_3) = V(s_1) + V(s_2)$ always.  The projection $\Pi_\mu v$ of any
+$v \in \R^3$ finds the weights $\mathbf{w}^* = \argmin_\mathbf{w} \|v - \Phi \mathbf{w}\|_\mu^2$
+by solving $\Phi^\top D_\mu \Phi \mathbf{w}^* = \Phi^\top D_\mu v$, yielding
+\[
+\mathbf{w}^* = \tfrac{1}{2}\begin{pmatrix} v_1 + v_3 - v_2 \\ v_2 + v_3 - v_1 \end{pmatrix},
+\]
+so the projection ``splits the contribution of $s_3$'' across the two basis directions.
+\end{example}
+
+\subsection{Existence of the TD Fixed Point}
+
+\begin{theorem}[TD fixed point existence and uniqueness]
+\label{thm:td-fixed-point}
+\index{TD fixed point!existence}
+Under the assumptions of Theorem~\ref{thm:linear-td-convergence}, the projected Bellman operator
+$\Pi_\mu T^\pi : \mathcal{F} \to \mathcal{F}$ is a contraction in the $\mu$-norm with
+contraction factor $\gamma$:
+\begin{equation}
+\label{eq:projected-contraction}
+\|\Pi_\mu T^\pi u - \Pi_\mu T^\pi v\|_\mu \leq \gamma \|u - v\|_\mu
+\qquad \forall\, u, v \in \mathcal{F}.
+\end{equation}
+Consequently, the projected Bellman equation~\eqref{eq:projected-bellman} has a unique solution
+$\hat{V} = \Phi \mathbf{w}_{\mathrm{TD}} \in \mathcal{F}$.
+\end{theorem}
+
+\begin{proof}
+The Bellman operator $T^\pi$ is itself a contraction in the $\mu$-norm with factor $\gamma$
+(this follows from the contraction property of $T^\pi$ in the sup-norm and the equivalence of
+these norms for positive $\mu$).  Formally, for any $u, v$:
+\[
+\|T^\pi u - T^\pi v\|_\mu \leq \gamma \|u - v\|_\mu.
+\]
+Since $\Pi_\mu$ is a non-expansive projection ($\|\Pi_\mu x\|_\mu \leq \|x\|_\mu$ for all $x$),
+we have
+\[
+\|\Pi_\mu T^\pi u - \Pi_\mu T^\pi v\|_\mu
+\leq \|T^\pi u - T^\pi v\|_\mu
+\leq \gamma \|u - v\|_\mu.
+\]
+Because $\gamma < 1$ and $\mathcal{F}$ is a complete metric space (a closed subspace of
+$\R^{|\cS|}$), the Banach fixed-point theorem guarantees a unique fixed point.
+\end{proof}
+
+\subsection{Approximation Error at the TD Fixed Point}
+
+The TD fixed point $\hat{V}$ minimises a particular measure of error, but it does not minimise the
+mean-squared error $\|\hat{V} - V^\pi\|_\mu^2$ directly.  The following classical bound
+(Tsitsiklis and Van Roy, 1997) quantifies how far the TD fixed point deviates from the best
+possible approximation.
+
+\begin{theorem}[TD fixed-point approximation bound]
+\label{thm:td-bound}
+\index{TD fixed point!approximation error}
+Let $\hat{V}^* = \Pi_\mu V^\pi$ be the best approximation of $V^\pi$ in $\mathcal{F}$.  Then
+\begin{equation}
+\label{eq:td-bound}
+\|\hat{V} - V^\pi\|_\mu \leq \frac{1}{\sqrt{1 - \gamma^2}}\, \|\hat{V}^* - V^\pi\|_\mu.
+\end{equation}
+\end{theorem}
+
+The factor $1/\sqrt{1-\gamma^2}$ is a ``price'' paid for bootstrapping: the TD fixed point may be
+up to $1/\sqrt{1-\gamma^2}$ times worse than the best-in-class approximation.  For $\gamma = 0.99$
+this factor is approximately $7.1$, illustrating that bootstrapping can significantly amplify
+approximation errors in problems with long time horizons.
+
+% ===========================================================
+\section{Semi-Gradient Methods}
+\label{sec:semi-gradient}
+% ===========================================================
+
+\subsection{True Gradient Descent for Prediction}
+
+Before examining semi-gradient methods, it is instructive to understand what true gradient descent
+would look like for the prediction problem.  Define the \textbf{mean-squared value
+error}\index{mean-squared value error}
+\begin{equation}
+\label{eq:msve}
+\overline{\mathrm{VE}}(\mathbf{w})
+= \|V^\pi - V_{\mathbf{w}}\|_{\mu}^{2}
+= \sum_{s \in \cS} \mu(s)\bigl[V^\pi(s) - V_\mathbf{w}(s)\bigr]^2,
+\end{equation}
+where $\mu$ is the on-policy distribution.  The true gradient of $\overline{\mathrm{VE}}$
+with respect to $\mathbf{w}$ is
+\begin{equation}
+\label{eq:true-grad-msve}
+-\frac{1}{2}\nabla_\mathbf{w}\overline{\mathrm{VE}}(\mathbf{w})
+= \sum_s \mu(s)\bigl[V^\pi(s) - V_\mathbf{w}(s)\bigr]\nabla_\mathbf{w} V_\mathbf{w}(s).
+\end{equation}
+Unfortunately, $V^\pi(s)$ is unknown, so we cannot evaluate this gradient directly.  Monte Carlo
+methods substitute the sample return $G_t \approx V^\pi(S_t)$, giving the update
+\[
+\mathbf{w} \leftarrow \mathbf{w} + \alpha\bigl[G_t - V_\mathbf{w}(S_t)\bigr]\nabla_\mathbf{w} V_\mathbf{w}(S_t).
+\]
+This is a true stochastic gradient step because $\E[G_t \mid S_t] = V^\pi(S_t)$ and the
+gradient $\nabla_\mathbf{w} V_\mathbf{w}(S_t)$ does not appear in the target $G_t$.
+
+\subsection{Why TD Breaks True Gradient Descent}
+
+TD methods replace $G_t$ with the one-step bootstrap target $R_{t+1} + \gamma V_\mathbf{w}(S_{t+1})$.
+The resulting update is
+\begin{equation}
+\label{eq:semi-grad-td}
+\mathbf{w} \leftarrow \mathbf{w} + \alpha\underbrace{\bigl[R_{t+1} + \gamma V_\mathbf{w}(S_{t+1}) - V_\mathbf{w}(S_t)\bigr]}_{\delta_t}\nabla_\mathbf{w} V_\mathbf{w}(S_t).
+\end{equation}
+This \emph{looks} like a gradient step, but it is not.
+
+\begin{definition}[Semi-gradient method]
+\label{def:semi-gradient}
+\index{semi-gradient method}
+A \textbf{semi-gradient} method is one in which the update direction is computed as if $\delta_t$
+were an error signal independent of $\mathbf{w}$, i.e., the gradient is taken only through
+$V_\mathbf{w}(S_t)$ and not through the target $V_\mathbf{w}(S_{t+1})$.  The update
+\eqref{eq:semi-grad-td} is a semi-gradient step because the gradient of $\delta_t$ with respect
+to $\mathbf{w}$ via its dependence on $V_\mathbf{w}(S_{t+1})$ is ignored.
+\end{definition}
+
+To see why the gradient through $V_\mathbf{w}(S_{t+1})$ is omitted, note that if we computed
+the true gradient of $\frac{1}{2}\delta_t^2$ we would obtain
+\[
+\nabla_\mathbf{w}\tfrac{1}{2}\delta_t^2
+= \delta_t\bigl(\gamma\nabla_\mathbf{w}V_\mathbf{w}(S_{t+1}) - \nabla_\mathbf{w}V_\mathbf{w}(S_t)\bigr).
+\]
+The TD semi-gradient drops the $\gamma\nabla_\mathbf{w}V_\mathbf{w}(S_{t+1})$ term.  This
+omission means the update direction is \emph{not} the negative gradient of any fixed objective
+function.  As a consequence, standard convergence theorems for stochastic gradient descent do not
+apply directly.
+
+\begin{remark}
+\label{rem:semi-grad-motivation}
+The omission of the bootstrap gradient is deliberate, not an error.  If one were to include it,
+the resulting \emph{residual gradient} algorithm converges in the mean-squared Bellman error but
+suffers from a ``double-sampling'' problem: computing the full gradient requires two independent
+samples of $S_{t+1}$ for the same $(S_t, A_t)$, which is typically unavailable in a single
+interaction stream.  Semi-gradient methods avoid this by treating the target as fixed; their
+practical convergence properties are generally superior despite the lack of a gradient guarantee.
+\end{remark}
+
+\subsection{Semi-Gradient TD Algorithm}
+
+\begin{algorithm}[ht]
+\caption{Semi-Gradient TD(0) for Policy Evaluation}
+\label{alg:semi-grad-td0}
+\KwIn{Policy $\pi$, feature map $\varphi$, step size $\alpha > 0$, discount $\gamma \in [0,1)$}
+Initialise $\mathbf{w} \in \R^d$ (e.g., $\mathbf{w} \leftarrow \mathbf{0}$)\;
+\For{each episode}{
+  Initialise state $S_0$\;
+  \For{$t = 0, 1, 2, \ldots$ until $S_t$ is terminal}{
+    Choose $A_t \sim \pi(\cdot \mid S_t)$\;
+    Observe $R_{t+1}$ and $S_{t+1}$\;
+    $\delta_t \leftarrow R_{t+1} + \gamma \mathbf{w}^\top \varphi(S_{t+1}) - \mathbf{w}^\top \varphi(S_t)$\;
+    $\mathbf{w} \leftarrow \mathbf{w} + \alpha\, \delta_t\, \varphi(S_t)$\;
+  }
+}
+\end{algorithm}
+
+\subsection{Convergence of Semi-Gradient TD}
+
+For the linear case, semi-gradient TD(0) under on-policy sampling converges to the TD fixed point
+$\mathbf{w}_{\mathrm{TD}}$ characterised by Theorem~\ref{thm:td-fixed-point}.  The argument
+relies on the \emph{ordinary differential equation (ODE) method}\index{ODE method}: one shows that
+the mean update field
+\[
+\bar{f}(\mathbf{w}) = \E_\mu[\delta_t \varphi(S_t) \mid \mathbf{w}]
+= \Phi^\top D_\mu (T^\pi(\Phi\mathbf{w}) - \Phi\mathbf{w})
+\]
+is a contraction toward $\mathbf{w}_{\mathrm{TD}}$, and then appeals to a standard theorem
+(Kushner and Yin, 2003) that says stochastic approximation converges to the equilibrium of the
+associated ODE.
+
+For \emph{nonlinear} function approximators, even on-policy semi-gradient TD is not guaranteed to
+converge.  In practice, neural-network-based TD methods often converge to useful solutions, but
+counter-examples exist.  Convergence in the nonlinear case remains an active research area.
+
+% ===========================================================
+\section{The Deadly Triad}
+\label{sec:deadly-triad}
+% ===========================================================
+
+\subsection{Three Ingredients for Instability}
+
+The convergence guarantee of Theorem~\ref{thm:linear-td-convergence} hinges critically on the
+words ``on-policy sampling''.  When any one of three conditions is violated, the well-behaved
+landscape of linear TD breaks down.  When all three violations occur simultaneously, even linear
+function approximation can diverge.  Sutton and Barto~(2018) term this dangerous combination the
+\textbf{deadly triad}\index{deadly triad}.
+
+\begin{definition}[The deadly triad]
+\label{def:deadly-triad}
+\index{deadly triad}
+The \textbf{deadly triad} refers to the simultaneous presence of three elements:
+\begin{enumerate}
+\item \textbf{Function approximation:} using a parameterised function
+  $V_\mathbf{w}$ (or $Q_\mathbf{w}$) with $d \ll |\cS|$ instead of a separate table entry per
+  state.
+\item \textbf{Bootstrapping:} forming targets from the current estimate, as in TD methods, rather
+  than waiting for the full return, as in Monte Carlo.
+\item \textbf{Off-policy training:} updating parameters using data generated by a \emph{behaviour
+  policy} $b$ that differs from the \emph{target policy} $\pi$ being evaluated or improved.
+\end{enumerate}
+The combination of all three can cause parameter divergence even with linear approximators and
+even in the limit of infinite data.
+\end{definition}
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  every node/.style={font=\small},
+  tri/.style={draw, fill=gray!15, regular polygon, regular polygon sides=3,
+              minimum size=5.5cm, inner sep=0pt},
+  label/.style={font=\small\bfseries, align=center}
+]
+  % Deadly triad triangle
+  \node[tri] (T) {};
+  % Vertices
+  \coordinate (A) at (T.corner 1);  % top
+  \coordinate (B) at (T.corner 2);  % bottom-left
+  \coordinate (C) at (T.corner 3);  % bottom-right
+
+  \node[label, above=0.25cm of A] {Function\\Approximation};
+  \node[label, below left=0.2cm of B] {Bootstrapping};
+  \node[label, below right=0.2cm of C] {Off-Policy\\Training};
+
+  \node[font=\itshape\small, align=center] at ($(A)!0.5!(B)!0.33!(C)$)
+    {Potential\\Divergence};
+
+  % Safe-zone annotations on edges
+  \node[font=\tiny, above right, rotate=60] at ($(A)!0.5!(B)$) {MC (no bootstrap)};
+  \node[font=\tiny, above, rotate=0] at ($(B)!0.5!(C)$) {Tabular (no approx.)};
+  \node[font=\tiny, above left, rotate=-60] at ($(A)!0.5!(C)$) {On-policy TD};
+\end{tikzpicture}
+\caption{The deadly triad.  Each edge of the triangle is ``safe'': two of the three ingredients
+together are manageable.  Only when all three vertices are active simultaneously does instability
+become unavoidable in general.  The edge labels indicate which element is absent along each side.}
+\label{fig:deadly-triad}
+\end{figure}
+
+It is important to understand that each pair of ingredients is manageable:
+\begin{itemize}[leftmargin=*]
+\item \emph{Function approximation + bootstrapping, on-policy:} Linear TD(0) converges to the TD
+  fixed point (Theorem~\ref{thm:linear-td-convergence}).
+\item \emph{Function approximation + off-policy, no bootstrap:} Off-policy Monte Carlo with linear
+  function approximation converges because the gradient is a true gradient of the MSVE.
+\item \emph{Bootstrapping + off-policy, tabular:} Q-learning converges to $Q^*$ in the tabular
+  setting (Chapter~\ref{ch:td}, Theorem on Q-learning convergence).
+\end{itemize}
+
+The problem emerges only when all three are combined.
+
+\subsection{Baird's Counterexample}
+\label{subsec:baird}
+
+The clearest illustration of the deadly triad is \emph{Baird's counterexample}\index{Baird's counterexample}
+(Baird, 1995).  Consider a simple MDP with $7$ states and $2$ actions.  Six states are arranged in
+a star pattern; the seventh is a central hub.  The behaviour policy always chooses the first action
+(which transitions to one of the six star states, uniformly at random) with probability $\frac{6}{7}$
+and the second action (which transitions to the hub) with probability $\frac{1}{7}$.
+The target policy always takes the second action.  All rewards are zero, and $\gamma = 0.99$.
+
+The feature vectors are chosen so that the approximation family is linear.  Specifically, the
+feature vector for hub state $s_7$ is $(0,0,0,0,0,0,1,2)^\top$ and for star state $s_i$
+($i = 1, \ldots, 6$) is the vector with a $2$ in position $i$ and a $1$ in position $8$.  The
+weight vector $\mathbf{w} \in \R^8$ is initialised to $(1,1,1,1,1,1,10,1)^\top$.
+
+\begin{theorem}[Baird's counterexample]
+\label{thm:baird}
+\index{Baird's counterexample!divergence}
+Under semi-gradient off-policy TD(0) with the feature vectors described above, the weight vector
+$\mathbf{w}_t$ diverges to infinity almost surely, even though the feature matrix has full column
+rank and the step size satisfies the standard Robbins--Monro conditions.
+\end{theorem}
+
+The mechanism of divergence is subtle: the off-policy distribution $\mu$ concentrates too much
+weight on the star states (which are frequently visited under the behaviour policy) while the
+Bellman updates primarily ``push'' the values of those states up, since the target policy prefers
+to go to the hub.  The projection back onto the function class then amplifies this push rather
+than damping it, creating a positive feedback loop.
+
+\begin{remark}[What Baird's example teaches us]
+\label{rem:baird-lesson}
+Baird's example is not a pathological curiosity; it is a fundamental result about the limits of
+TD methods.  It tells us that the combination of semi-gradient bootstrapping and off-policy data
+is inherently dangerous, regardless of how well-behaved the feature representation is.  The
+solutions explored in practice\,---\,importance sampling corrections, gradient-TD methods
+(TDC, GTD2), and the engineering stabilisations of DQN\,---\,all represent different strategies
+for escaping the triad's dangers without sacrificing the benefits of off-policy data.
+\end{remark}
+
+% ===========================================================
+\section{Deep Q-Networks}
+\label{sec:dqn}
+% ===========================================================
+
+\subsection{From Linear to Nonlinear Approximation}
+
+The successes of linear function approximation are real but limited: the method requires
+hand-designed features, and in high-dimensional perceptual domains such as raw image pixels, no
+human designer can specify the right features in advance.  The natural next step is to use a
+deep neural network\index{deep neural network} as the approximator, letting the network learn its
+own internal representation from data.
+
+The challenge is that deep networks bring all the difficulties of the deadly triad into sharp
+focus.  In Q-learning with a neural network $Q_\theta$ and greedy action selection, the target for
+state--action pair $(S_t, A_t)$ is
+\begin{equation}
+\label{eq:naive-deep-q-target}
+y_t = R_{t+1} + \gamma \max_{a'} Q_\theta(S_{t+1}, a'),
+\end{equation}
+and the loss minimised is $(y_t - Q_\theta(S_t, A_t))^2$.  But both the prediction $Q_\theta(S_t, A_t)$
+and the target $y_t$ depend on the same parameters $\theta$, so each gradient step simultaneously
+changes the prediction \emph{and} the target.  This creates a moving-target problem: the network
+chases a quantity that shifts with every update, leading to oscillations and divergence in practice.
+
+Two further pathologies compound the problem.  The transitions $(S_t, A_t, R_{t+1}, S_{t+1})$
+collected by a sequential agent are \emph{highly correlated}: consecutive transitions share the
+same state sequence.  Training a neural network on correlated mini-batches violates the i.i.d.\
+assumption of stochastic gradient descent and causes the network to overfit to recent experience,
+``forgetting'' earlier learning.  Additionally, the distribution of training data changes as the
+policy improves, making the optimisation landscape non-stationary.
+
+\subsection{Experience Replay}
+\label{subsec:experience-replay}
+
+The first stabilising innovation introduced by Mnih et al.~(2013, 2015) is
+\textbf{experience replay}\index{experience replay}.  As the agent interacts with the environment,
+each transition $(S_t, A_t, R_{t+1}, S_{t+1})$ is stored in a \emph{replay buffer}\index{replay buffer}
+$\mathcal{D}$ of capacity $N$.  During training, mini-batches of transitions are sampled
+\emph{uniformly at random} from $\mathcal{D}$:
+\begin{equation}
+\label{eq:replay-sampling}
+\{(s_i, a_i, r_i, s'_i)\}_{i=1}^B \sim \mathrm{Uniform}(\mathcal{D}).
+\end{equation}
+This simple change has two important effects.  First, it \emph{decorrelates} training data:
+successive mini-batches are drawn from many different time steps, breaking the temporal
+correlation that destabilises on-line updates.  Second, each transition is used for potentially
+many gradient steps, improving data efficiency.  The cost is that replay requires storing a large
+buffer in memory and introduces an implicit off-policy component: transitions stored long ago were
+generated by an older, different policy.
+
+\subsection{Target Networks}
+\label{subsec:target-networks}
+
+The second stabilising innovation is the \textbf{target network}\index{target network}.  DQN
+maintains two networks with the same architecture: the \emph{online network} $Q_\theta$ (also
+called the \emph{behaviour network}) and the \emph{target network} $Q_{\theta^-}$.  The online
+network is updated at every gradient step.  The target network's parameters $\theta^-$ are held
+fixed for $C$ steps (typically $C = 10\,000$) and then synchronised with the online network:
+$\theta^- \leftarrow \theta$.
+
+With the target network, the loss function becomes
+\begin{equation}
+\label{eq:dqn-loss}
+L(\theta) = \E_{(s,a,r,s') \sim \mathcal{D}}\!\left[
+\Bigl(r + \gamma \max_{a'} Q_{\theta^-}(s', a') - Q_\theta(s, a)\Bigr)^2
+\right].
+\end{equation}
+The gradient is taken only with respect to $\theta$, treating $\theta^-$ as a constant.  By
+freezing the target for $C$ steps, the method reduces the correlation between the parameters
+being updated and the target they are chasing.  The target is not perfectly stationary\,---\,it
+still moves every $C$ steps\,---\,but in practice this significantly stabilises training.
+
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[scale=0.9, transform shape,
+  box/.style={draw, rounded corners, minimum width=2.8cm, minimum height=0.9cm,
+              font=\small, fill=gray!10, align=center},
+  buf/.style={draw, rounded corners, minimum width=2.8cm, minimum height=0.9cm,
+              font=\small, fill=blue!10, align=center},
+  lossbox/.style={draw, rounded corners, minimum width=2.8cm, minimum height=0.9cm,
+              font=\small, fill=orange!10, align=center},
+  arr/.style={-{Latex[length=2mm]}, thick},
+  darr/.style={-{Latex[length=2mm]}, thick, dashed}
+]
+
+  % Row 1: Online Network (left) and Target Network (right)
+  \node[box] (online) at (0,0) {Online Network\\$Q_\theta$};
+  \node[box] (target) at (5.5,0) {Target Network\\$Q_{\theta^-}$};
+
+  % Row 2: Loss centred between the two networks
+  \node[lossbox] (loss) at (2.75,-2.8) {Loss $L(\theta)$};
+
+  % Row 3: Replay Buffer centred below Loss
+  \node[buf] (buf) at (2.75,-5.0) {Replay Buffer $\mathcal{D}$};
+
+  % Dashed arrow: copy weights
+  \draw[darr] (online.north) to[bend left=20]
+    node[above, font=\scriptsize]{copy every $C$ steps} (target.north);
+
+  % Online Network -> Loss
+  \draw[arr] (online.south) -- (loss.north west)
+    node[midway, left, font=\scriptsize, xshift=-2pt]{predict $Q_\theta(s,a)$};
+
+  % Target Network -> Loss
+  \draw[arr] (target.south) -- (loss.north east)
+    node[midway, right, font=\scriptsize, xshift=2pt]{target $\max_{a'}Q_{\theta^-\!}(s',a')$};
+
+  % Replay Buffer -> Loss
+  \draw[arr] (buf.north) -- (loss.south)
+    node[midway, right, font=\scriptsize, xshift=2pt]{mini-batch};
+
+  % Loss -> Online Network (gradient, curved back on the far left)
+  \draw[arr] (loss.west) to[out=180, in=250, looseness=1.2]
+    node[left, font=\scriptsize, xshift=-4pt]{$\nabla_\theta L$}
+    (online.south west);
+
+\end{tikzpicture}
+\caption{DQN architecture.  The online network $Q_\theta$ selects actions and is updated every step.
+The target network $Q_{\theta^-}$ computes the TD target and is synchronised every $C$ steps.
+Transitions are stored in the replay buffer $\mathcal{D}$ and sampled in random mini-batches for
+training.  Dashed arrow: periodic hard copy $\theta^- \leftarrow \theta$.}
+\label{fig:dqn-arch}
+\end{figure}
+
+% \begin{figure}[ht]
+% \centering
+% \begin{tikzpicture}[scale=0.9, transform shape,
+%   box/.style={draw, rounded corners, minimum width=2.8cm, minimum height=0.9cm,
+%               font=\small, fill=gray!10, align=center},
+%   buf/.style={draw, rounded corners, minimum width=2.8cm, minimum height=0.9cm,
+%               font=\small, fill=blue!10, align=center},
+%   lossbox/.style={draw, rounded corners, minimum width=2.8cm, minimum height=0.9cm,
+%               font=\small, fill=orange!10, align=center},
+%   arr/.style={-{Latex[length=2mm]}, thick},
+%   darr/.style={-{Latex[length=2mm]}, thick, dashed}
+% ]
+%   % Row 1: Online Network (left) and Target Network (right)
+%   \node[box] (online) {Online Network\\$Q_\theta$};
+%   \node[box, right=3.8cm of online] (target) {Target Network\\$Q_{\theta^-}$};
+
+%   % Row 2: Loss centred below
+%   \node[lossbox, below=2.2cm of $(online.south)!0.5!(target.south)$] (loss) {Loss $L(\theta)$};
+
+%   % Row 3: Replay Buffer centred below Loss
+%   \node[buf, below=1.4cm of loss] (buf) {Replay Buffer $\mathcal{D}$};
+
+%   % Dashed arrow: copy weights
+%   \draw[darr] (online.north) to[bend left=18]
+%     node[above, font=\scriptsize]{copy every $C$ steps} (target.north);
+
+%   % Online Network -> Loss (straight down from online to the loss node)
+%   \draw[arr] (online.south) -- (online.south |- loss.north)
+%     node[midway, right, font=\scriptsize, xshift=2pt]{predict $Q_\theta(s,a)$};
+
+%   % Target Network -> Loss (straight down from target to the loss node)
+%   \draw[arr] (target.south) -- (target.south |- loss.north)
+%     node[midway, left, font=\scriptsize, xshift=-2pt]{target $\max_{a'}Q_{\theta^-\!}(s',a')$};
+
+%   % Replay Buffer -> Loss (straight up)
+%   \draw[arr] (buf.north) -- node[right, font=\scriptsize, xshift=2pt]{mini-batch} (loss.south);
+
+%   % Loss -> Online Network (curved back on the far left)
+%   \draw[arr] (loss.north west) to[out=160, in=250, looseness=1.4]
+%     node[left, font=\scriptsize, xshift=-6pt, yshift=-4pt]{$\nabla_\theta L$}
+%     (online.south west);
+% \end{tikzpicture}
+% \caption{DQN architecture.  The online network $Q_\theta$ selects actions and is updated every step.
+% The target network $Q_{\theta^-}$ computes the TD target and is synchronised every $C$ steps.
+% Transitions are stored in the replay buffer $\mathcal{D}$ and sampled in random mini-batches for
+% training.  Dashed arrow: periodic hard copy $\theta^- \leftarrow \theta$.}
+% \label{fig:dqn-arch}
+% \end{figure}
+
+\subsection{DQN Algorithm}
+
+\begin{algorithm}[ht]
+\caption{Deep Q-Network (DQN)}
+\label{alg:dqn}
+\KwIn{Env., network $Q_\theta$, replay capacity $N$, batch size $B$, update frequency $C$,
+$\varepsilon$-schedule, $\gamma$, $\alpha$}
+Initialise $\theta$ randomly; $\theta^- \leftarrow \theta$; $\mathcal{D} \leftarrow \emptyset$\;
+\For{each episode}{
+  Reset environment; observe $s_0$\;
+  \For{$t = 0, 1, 2, \ldots$}{
+    With probability $\varepsilon$: $a_t \leftarrow$ random action; else $a_t \leftarrow \argmax_a Q_\theta(s_t, a)$\;
+    Execute $a_t$; observe $r_{t+1}$, $s_{t+1}$, done flag\;
+    Store $(s_t, a_t, r_{t+1}, s_{t+1})$ in $\mathcal{D}$ (discard oldest if full)\;
+    \If{$|\mathcal{D}| \geq B$}{
+      Sample mini-batch $\{(s_i, a_i, r_i, s'_i)\}_{i=1}^B \sim \mathcal{D}$\;
+      \For{each transition $i$}{
+        \lIf{$s'_i$ is terminal}{$y_i \leftarrow r_i$}
+        \lElse{$y_i \leftarrow r_i + \gamma \max_{a'} Q_{\theta^-}(s'_i, a')$}
+      }
+      Perform gradient step: $\theta \leftarrow \theta - \alpha \nabla_\theta \frac{1}{B}\sum_i (y_i - Q_\theta(s_i, a_i))^2$\;
+      \If{$t \bmod C = 0$}{$\theta^- \leftarrow \theta$}
+    }
+    \lIf{done}{\textbf{break}}
+  }
+}
+\end{algorithm}
+
+\subsection{Architecture and Atari Results}
+
+For Atari games, the DQN network is a convolutional architecture: three convolutional layers
+(with $32$, $64$, and $64$ filters of sizes $8\times 8$, $4\times 4$, $3\times 3$ and strides
+$4$, $2$, $1$ respectively) followed by a fully connected layer of $512$ units and a linear output
+layer with one unit per action.  The input is four stacked $84\times 84$ greyscale frames,
+preprocessed from the raw $210\times 160$ RGB output.
+
+Mnih et al.~(2015) evaluated DQN on $49$ Atari games using a \emph{single fixed architecture
+and hyperparameters} across all games.  DQN achieved above-human-level performance on $29$ of the
+$49$ games and set a new state of the art on almost all of them.  Crucially, DQN receives only
+raw pixels and the game score as input, with no game-specific feature engineering.  This
+demonstrated for the first time that a single deep RL algorithm could achieve broad competence
+across diverse tasks purely from high-dimensional sensory input.
+
+% ===========================================================
+\section{Extensions of DQN}
+\label{sec:dqn-extensions}
+% ===========================================================
+
+The DQN paper sparked a wave of algorithmic improvements.  We survey three that have become
+standard components of modern deep RL systems.
+
+\subsection{Double DQN}
+\label{subsec:double-dqn}
+
+A subtle but important pathology of Q-learning is \textbf{maximisation
+bias}\index{maximisation bias}: the $\max_{a'} Q(s', a')$ operator is an overestimate of
+$\max_{a'} Q^*(s', a')$ when $Q$ has any noise, because the maximum of noisy estimates is biased
+upward.  Van Hasselt et al.~(2016) showed that this bias is present and harmful in DQN, causing
+the agent to overestimate values and take suboptimal actions.
+
+The fix is \textbf{Double DQN}\index{Double DQN} (DDQN): decouple action selection from value
+estimation by using the online network to choose the greedy action and the target network to
+evaluate it:
+\begin{equation}
+\label{eq:ddqn-target}
+y_t^{\mathrm{DDQN}} = R_{t+1} + \gamma Q_{\theta^-}\!\left(S_{t+1},\, \argmax_{a'} Q_\theta(S_{t+1}, a')\right).
+\end{equation}
+Compared to DQN's target in \eqref{eq:dqn-loss}, the only change is that the $\argmax$ and the
+$Q$-evaluation are performed by different networks.  This simple modification substantially reduces
+overestimation and improves performance on many Atari games with negligible computational overhead.
+
+\subsection{Dueling DQN}
+\label{subsec:dueling-dqn}
+
+Wang et al.~(2016) observed that in many states, the value of the state $V^\pi(s)$ is more
+informative than the individual action values $Q^\pi(s, a)$.  When the agent is in a safe state,
+the choice of action matters little; what matters is the state itself.  They proposed the
+\textbf{dueling architecture}\index{dueling network architecture}, which splits the network's final
+layers into two streams: one estimating the state-value function $V_\theta(s)$ and one estimating
+the \textbf{advantage function}\index{advantage function}
+\[
+A_\theta(s, a) = Q_\theta(s, a) - V_\theta(s).
+\]
+The streams are combined as
+\begin{equation}
+\label{eq:dueling}
+Q_\theta(s, a) = V_\theta(s) + \left(A_\theta(s, a) - \frac{1}{|\cA|}\sum_{a'} A_\theta(s, a')\right),
+\end{equation}
+where the mean subtraction ensures identifiability (since $V$ and $A$ are not separately
+identifiable without it).  The dueling architecture allows the network to learn which states are
+valuable without having to learn the effect of each action, which is beneficial when actions have
+similar effects in most states.
+
+\subsection{Prioritised Experience Replay}
+\label{subsec:per}
+
+In standard replay, transitions are sampled uniformly from $\mathcal{D}$.  Schaul et al.~(2016)
+argued that transitions with large TD errors contain more ``surprising'' information and should be
+replayed more often.  \textbf{Prioritised experience replay}\index{prioritised experience replay}
+(PER) assigns each transition $i$ a priority
+\[
+p_i = |\delta_i|^\alpha + \epsilon,
+\]
+where $\delta_i$ is the most recent TD error for transition $i$, $\alpha > 0$ controls the
+degree of prioritisation, and $\epsilon > 0$ prevents zero priority.  The sampling probability is
+$P(i) = p_i / \sum_j p_j$.  Importance-sampling weights $w_i = (N \cdot P(i))^{-\beta}$ (with
+$\beta \to 1$ as training progresses) correct for the non-uniform sampling to maintain unbiased
+gradient estimates.  PER typically leads to faster learning and better final performance,
+particularly in sparse-reward environments where informative transitions are rare.
+
+% ===========================================================
+\section{Convergence Analysis}
+\label{sec:convergence-vfa}
+% ===========================================================
+
+\subsection{What We Can Prove}
+
+The convergence landscape for value function approximation is considerably more nuanced than for
+tabular RL.  Table~\ref{tab:convergence-summary} summarises the main results.
+
+\begin{table}[ht]
+\centering
+\caption{Convergence summary for value function approximation methods.  ``Converges'' means
+convergence to a useful (possibly approximate) solution almost surely or in mean square.
+``May diverge'' means counter-examples to convergence are known.}
+\label{tab:convergence-summary}
+\renewcommand{\arraystretch}{1.25}
+\begin{tabular}{lllc}
+\toprule
+\textbf{Method} & \textbf{Approximation} & \textbf{Sampling} & \textbf{Guarantee} \\
+\midrule
+MC gradient & Linear / Nonlinear & On / Off & Converges (local min.) \\
+Semi-gradient TD & Linear & On-policy & Converges (TD f.p.) \\
+Semi-gradient TD & Linear & Off-policy & May diverge \\
+Semi-gradient TD & Nonlinear & On-policy & May diverge \\
+Gradient-TD (GTD2) & Linear & Off-policy & Converges (TD f.p.) \\
+Semi-gradient Q-learning & Linear & Off-policy & May diverge \\
+DQN & Nonlinear (deep) & Off-policy & No guarantee \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Gradient-TD Methods}
+
+To escape the deadly triad while preserving off-policy learning, several authors developed
+\textbf{gradient-TD methods}\index{gradient-TD methods}\,---\,algorithms that minimise a
+surrogate objective whose true gradient is tractable.  The key insight (Sutton et al., 2009) is
+to define the \emph{projected Bellman error}
+\[
+\overline{\mathrm{PBE}}(\mathbf{w}) = \|\Pi_\mu(T^\pi V_\mathbf{w} - V_\mathbf{w})\|_\mu^2,
+\]
+which is zero at the TD fixed point.  Unlike the MSVE, the gradient of $\overline{\mathrm{PBE}}$
+can be estimated with a single sample (with an auxiliary parameter vector), avoiding the
+double-sampling problem.  The resulting algorithms (TDC and GTD2) converge to $\mathbf{w}_{\mathrm{TD}}$
+under off-policy sampling, breaking one leg of the deadly triad.  Their practical adoption has
+been limited, however, because they require careful tuning of two step sizes and can converge
+slowly.
+
+\subsection{The Nonlinear Case}
+
+For deep neural networks, no convergence guarantee analogous to Theorem~\ref{thm:linear-td-convergence}
+is known, and genuine counter-examples to convergence with nonlinear approximators exist
+(Tsitsiklis and Van Roy, 1997).  The engineering innovations of DQN\,---\,experience replay and
+target networks\,---\,are heuristic stabilisers that work well in practice without providing
+theoretical guarantees.
+
+One partial result is available: if the DQN loss \eqref{eq:dqn-loss} is viewed as a supervised
+regression problem with fixed targets (i.e., $\theta^-$ is held constant), then standard
+neural-network training converges to a local minimum of $L(\theta)$ for that fixed target.
+The difficulty is that the target changes periodically.  If the target network is updated
+infinitely slowly (formally, $C \to \infty$ with the online network fully converged at each
+step), one recovers an iterative sequence of supervised problems whose fixed points are related
+to the Q-learning fixed point.  This \emph{fitted value iteration}\index{fitted value iteration}
+perspective (Gordon, 1999; Riedmiller, 2005) provides some theoretical grounding for DQN's
+behaviour.
+
+\begin{remark}[Mean-field theory perspective]
+\label{rem:mean-field}
+Recent work in the \emph{mean-field} limit (infinite-width networks) and the \emph{neural tangent
+kernel} (NTK) regime has provided new tools for analysing neural-network-based RL.  In the NTK
+limit, the network behaves approximately linearly in its parameters throughout training, recovering
+the convergence guarantees of linear TD.  While this regime is not fully realistic (real networks
+are far narrower than required), it suggests that ``sufficiently over-parameterised'' networks may
+inherit some linear-case stability, and supports empirical observations that wide networks train
+more stably in deep RL.
+\end{remark}
+
+% ===========================================================
+\section{Applications and Practical Considerations}
+\label{sec:applications-vfa}
+% ===========================================================
+
+\subsection{Feature Engineering vs.\ End-to-End Learning}
+
+A central design decision in any value-function-approximation system is whether to hand-engineer
+features or learn them end-to-end.
+
+\textbf{Hand-designed features} (tile codings, radial basis functions, Fourier bases) are
+interpretable, require less data, and admit convergence guarantees under linear approximation.
+They are the right choice when domain knowledge is rich and the state space is moderate in
+complexity.  For example, a robot navigation task on a known map might use as features the robot's
+$(x, y)$ coordinates, its heading, and the distance to the nearest obstacle\,---\,a four-dimensional
+representation that collapses thousands of LIDAR readings to the quantities that actually matter.
+
+\textbf{End-to-end deep learning} is necessary when the raw observation is high-dimensional
+(images, audio, text) and the relevant features are not known in advance.  The cost is a much
+larger parameter count, longer training time, reduced interpretability, and weaker theoretical
+guarantees.  In practice, end-to-end deep RL benefits from: (i) sufficient network capacity to
+represent the value function; (ii) feature normalisation to prevent gradient explosion; (iii) a
+well-tuned $\varepsilon$-greedy schedule to balance exploration and exploitation; and (iv) a large
+enough replay buffer to break temporal correlations.
+
+\subsection{Hyperparameter Sensitivity}
+
+Deep RL algorithms are notoriously sensitive to hyperparameters.  Henderson et al.~(2018)
+demonstrated that the reported performance of deep RL algorithms can vary by more than an order of
+magnitude depending on random seeds, implementation details, and hyperparameter choices.
+The following hyperparameters most critically affect DQN performance:
+\begin{description}[leftmargin=!, labelwidth=3.5cm]
+\item[Replay buffer size $N$:] Too small and the buffer fills with correlated recent experience;
+  too large and old, stale transitions from an early policy dominate.  Typical values: $10^5$--$10^6$.
+\item[Target update frequency $C$:] Too small causes the moving-target problem; too large means
+  the target lags far behind, slowing learning.  Typical: $10^3$--$10^4$ steps.
+\item[Batch size $B$:] Larger batches give more stable gradient estimates but increase memory
+  and compute per update.  Typical: $32$--$256$.
+\item[$\varepsilon$-schedule:] The decay rate from $1.0$ to a small final $\varepsilon$ must be
+  matched to the task; too fast leads to premature exploitation; too slow wastes sample budget.
+\end{description}
+
+\subsection{Practical Recommendations}
+
+For practitioners implementing deep RL for the first time:
+\begin{itemize}[leftmargin=*]
+\item Start with the simplest baseline: tabular Q-learning or linear function approximation, if
+  the state space is manageable.  Verify that the environment and reward signal are correct before
+  introducing neural networks.
+\item When moving to deep networks, use an established implementation (e.g., Stable Baselines3,
+  CleanRL) rather than implementing from scratch, to avoid subtle bugs in replay buffers and target
+  networks.
+\item Plot the TD error, average episode return, and Q-value estimates throughout training.
+  Exploding Q-values are a reliable signal of the moving-target pathology.
+\item If training is unstable, reduce the learning rate, increase the target network update
+  frequency $C$, or switch from hard target updates ($\theta^- \leftarrow \theta$) to soft updates
+  ($\theta^- \leftarrow \tau\theta + (1-\tau)\theta^-$, $\tau \ll 1$), as used in DDPG and SAC.
+\item Normalise rewards to $[-1, 1]$ or clip gradients to prevent early divergence.
+\end{itemize}
+
+\subsection{Historical Notes}
+
+Function approximation in RL has a long history.  Bellman himself recognised the curse of
+dimensionality in the 1950s.  The convergence of linear TD(0) was established by Tsitsiklis and
+Van Roy (1997).  The deadly triad was identified and named by Sutton (1995).  Neural network
+function approximation in RL dates at least to Tesauro's TD-Gammon (1992), which learned to play
+backgammon at near-grandmaster level using a hand-crafted two-layer network trained with TD
+methods.  DQN (Mnih et al., 2013, published in full in 2015) was the first demonstration of
+end-to-end deep RL achieving superhuman performance on diverse tasks.  Double DQN (Van Hasselt et
+al., 2016), Dueling DQN (Wang et al., 2016), and Prioritised Experience Replay (Schaul et al.,
+2016) were all published in the same year, collectively forming the ``DQN era'' of deep RL.  The
+Rainbow algorithm (Hessel et al., 2018) combined all six extensions into a single agent, achieving
+significantly improved sample efficiency.
+
+% ===========================================================
+\section*{Exercises}
+\label{sec:exercises-vfa}
+\addcontentsline{toc}{section}{Exercises}
+% ===========================================================
+
+\begin{exercise}
+\label{ex:curse-dimensionality}
+Consider a robot navigating a grid world described by an $n$-dimensional binary state vector (each
+dimension is $0$ or $1$).
+\begin{enumerate}
+\item How many states does a tabular Q-function with $|\cA| = 4$ require to store?
+\item Suppose instead we use a linear function approximation with $d = 10n$ features, where $d \ll 2^n$.
+  Express the ratio of storage required by the linear approximation to the tabular representation
+  as a function of $n$.
+\item At what value of $n$ does the linear approximation first require less storage than the tabular
+  representation (assuming $d = 10n$)?
+\item Discuss one approximation error that the linear representation introduces compared to the tabular one.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:projection-compute}
+Let $|\cS| = 4$, $d = 2$, $\mu = (1/4, 1/4, 1/4, 1/4)$, and
+\[
+\Phi = \begin{pmatrix} 1 & 0 \\ 1 & 0 \\ 0 & 1 \\ 0 & 1 \end{pmatrix}.
+\]
+\begin{enumerate}
+\item Verify that $\Phi$ has full column rank.
+\item Compute the projection matrix $\Pi_\mu = \Phi(\Phi^\top D_\mu \Phi)^{-1} \Phi^\top D_\mu$.
+\item Apply the projection to the vector $v = (3, 1, 2, 4)^\top$.  What is $\Pi_\mu v$?
+\item Verify that $\|v - \Pi_\mu v\|_\mu \leq \|v - f\|_\mu$ for $f = (2, 2, 2, 2)^\top$.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:semi-gradient-not-gradient}
+Consider the mean-squared value error $\overline{\mathrm{VE}}(\mathbf{w}) = \sum_s \mu(s)[V^\pi(s)
+- V_\mathbf{w}(s)]^2$.  The TD target for a transition $(s, r, s')$ is
+$y = r + \gamma V_\mathbf{w}(s')$.
+\begin{enumerate}
+\item Write out $-\frac{1}{2}\nabla_\mathbf{w}[y - V_\mathbf{w}(s)]^2$ treating $y$ as a
+  constant (the semi-gradient).
+\item Write out $-\frac{1}{2}\nabla_\mathbf{w}[y - V_\mathbf{w}(s)]^2$ treating $y$ as a
+  function of $\mathbf{w}$ (the full gradient).
+\item Identify the term that the semi-gradient omits.  Under what condition is this term zero?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:td-bound}
+The approximation error bound at the TD fixed point (Theorem~\ref{thm:td-bound}) is
+$\|\hat{V} - V^\pi\|_\mu \leq \frac{1}{\sqrt{1-\gamma^2}}\|\hat{V}^* - V^\pi\|_\mu$.
+\begin{enumerate}
+\item Compute the bound factor for $\gamma \in \{0.5, 0.9, 0.99, 0.999\}$.
+\item As $\gamma \to 1$, the factor diverges.  Give an intuitive explanation of why bootstrapping
+  with near-unit discount amplifies approximation errors.
+\item Is the bound tight in general?  What would need to be true of the MDP and feature set for the
+  bound to be achieved with equality?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:deadly-triad-identify}
+For each of the following algorithms, identify which elements of the deadly triad are present and
+state whether convergence is guaranteed:
+\begin{enumerate}
+\item Monte Carlo with linear function approximation, on-policy.
+\item Q-learning in a tabular MDP with $|\cS| = 10^6$.
+\item Off-policy TD(0) with a neural network.
+\item SARSA with linear function approximation, on-policy.
+\item DQN on Atari.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:dqn-loss}
+Show that the DQN loss \eqref{eq:dqn-loss} reduces to the standard Q-learning update
+\eqref{eq:naive-deep-q-target} in the special case of a tabular (one-hot feature) representation
+with a step size $\alpha = 1$ and no target network ($\theta^- = \theta$).  What does this imply
+about DQN's relationship to Q-learning?
+\end{exercise}
+
+\begin{exercise}
+\label{ex:double-dqn}
+Let $Q(s, a) = Q^*(s, a) + \varepsilon_{s,a}$ where $\varepsilon_{s,a}$ are i.i.d.\ zero-mean
+noise terms with variance $\sigma^2$.
+\begin{enumerate}
+\item Show that $\E[\max_{a} Q(s, a)] \geq \max_a Q^*(s, a)$ (maximisation bias).
+\item Suppose actions are evaluated with an independent copy $\tilde{Q}(s, a) = Q^*(s, a) +
+  \tilde{\varepsilon}_{s,a}$, where $\tilde{\varepsilon}$ is independent of $\varepsilon$.
+  Is $\E[\tilde{Q}(s, \argmax_a Q(s,a))]$ still biased upward?  Justify your answer.
+\item Relate your findings to the Double DQN target \eqref{eq:ddqn-target}.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:per-is-weights}
+In prioritised experience replay, transitions are sampled with probability
+$P(i) = p_i / \sum_j p_j$ and corrected with importance-sampling weights
+$w_i = (N \cdot P(i))^{-\beta}$.
+\begin{enumerate}
+\item Show that if all transitions have equal priority $p_i = p$, then $w_i = 1$ for all $i$
+  (uniform sampling, no correction needed).
+\item Explain why importance-sampling corrections are necessary for convergence in the limit
+  $\beta = 1$.  What goes wrong when $\beta = 0$?
+\item Describe a situation where PER might \emph{hurt} performance compared to uniform replay.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:fitted-vi}
+\textbf{Fitted Value Iteration.} Consider the following algorithm: given a dataset $\mathcal{D}$
+of transitions, repeatedly solve the supervised regression problem
+\[
+\mathbf{w}_{k+1} = \argmin_\mathbf{w} \sum_{(s,a,r,s') \in \mathcal{D}}
+\bigl(r + \gamma \max_{a'} Q_{\mathbf{w}_k}(s', a') - Q_\mathbf{w}(s, a)\bigr)^2.
+\]
+\begin{enumerate}
+\item Show that for linear function approximation, this is equivalent to solving a sequence of
+  linear least-squares problems.
+\item Prove that if $Q_\mathbf{w}$ is a tabular representation (one parameter per $(s,a)$ pair)
+  and $\mathcal{D}$ covers all state--action pairs, the algorithm converges to $Q^*$.
+\item Explain how DQN with periodic target-network copies approximates fitted value iteration.
+  What is the key approximation made?
+\end{enumerate}
+\end{exercise}

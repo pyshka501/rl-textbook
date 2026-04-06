@@ -1,0 +1,177 @@
+\chapter*{Preface}
+\addcontentsline{toc}{chapter}{Preface}
+
+This book grew out of a conviction that the two great traditions of reinforcement learning\,---\,the
+classical mathematical theory and the modern practice of aligning large language
+models\,---\,deserve to be told as a single, coherent story.  In recent years, ideas that spent
+decades confined to the pages of control theory and dynamic programming have burst into the
+centre of AI development, powering the training of systems that write, reason, and converse.
+That journey is the subject of the present volume.
+
+\medskip
+
+\textbf{A note on inspiration and originality.}\quad
+Every textbook builds on earlier work, and this one is no exception.  We wish to
+acknowledge two books that have shaped the broader field and, inevitably, our
+own perspective---while clarifying what distinguishes the present volume.
+
+The first is \emph{Reinforcement Learning: An Introduction} by Richard
+S.\ Sutton and Andrew G.\ Barto, the standard reference for classical RL\@.
+Sutton and Barto established the pedagogical progression---from bandits
+through MDPs to temporal-difference methods---that has guided virtually every
+subsequent course.  Our treatment in Parts~I and~II follows the same logical
+arc, but departs in emphasis and presentation: we include tighter convergence
+analyses informed by recent results, introduce Generalised Advantage
+Estimation and PPO within the core narrative rather than as afterthoughts, and
+motivate every classical idea with an eye toward its eventual role in
+language-model training.  These choices reflect lessons learned from designing
+and delivering university-level RL courses as well as from applying these
+algorithms in production settings at scale.
+
+The second is \emph{The RLHF Book} by Nathan Lambert, the most thorough
+practical guide to reinforcement learning from human feedback for language
+models yet written.  Lambert demonstrated that the algorithmic ideas behind
+ChatGPT, Claude, and their successors could be explained precisely and
+accessibly.  Parts~III and~IV of our book cover overlapping territory---reward
+modelling, preference optimisation, PPO for LLMs---but extend the discussion
+in directions shaped by our own research and engineering experience: we
+provide a unified formal treatment connecting DPO, IPO, and KTO
+through the KL-constrained RL objective, and cover ORPO as a distinct
+reference-model-free approach; dedicate full chapters to GRPO and
+reinforcement learning with verifiable rewards (RLVR), topics that
+postdate Lambert's initial treatment; and include a substantial chapter on
+multi-step agentic systems that bridges RL theory with the emerging practice
+of tool-using language agents.
+
+More broadly, this book is not a synthesis of the two works above but an
+attempt to tell a \emph{new} story: one continuous narrative that begins with
+Bellman's principle of optimality and ends with the training pipelines behind
+modern reasoning models.  That narrative is informed by hands-on experience
+with large-scale RLHF training, reward-model debugging, and the practical
+pitfalls that no purely theoretical account can capture.  Where we succeed in
+making this bridge feel natural, the credit is shared with the community whose
+open research made it possible.  Where we fall short, the responsibility is
+entirely our own.
+
+
+\medskip
+
+\textbf{What this book is trying to do.}\quad
+The central goal of this volume is to build a single, unbroken bridge between the
+mathematical foundations laid by Bellman, Sutton, and Barto and the practical methods that
+now govern how large language models are trained and aligned.  The path from Bellman's
+principle of optimality to a working RLHF pipeline is shorter than it might appear, but it
+requires genuine fluency in both worlds.  A practitioner who understands only the engineering
+recipes misses the theoretical guarantees and the diagnostic intuition that theory provides.
+A theorist who has not engaged with the realities of language-model training\,---\,the
+instability of reward models, the sensitivity of PPO hyperparameters, the challenge of
+specifying human preferences\,---\,is ill-equipped to contribute to the most important
+application of RL today.
+
+Parts~I and~II of this book (covering bandits, MDPs, dynamic programming, Monte Carlo
+methods, temporal-difference learning, function approximation, policy gradients, and
+actor-critic methods) are inspired by Sutton and Barto's rigorous treatment and can be read
+entirely independently as a self-contained classical RL textbook.  Parts~III and~IV build on
+that foundation to cover reward modelling, RLHF, Direct Preference Optimisation, Group
+Relative Policy Optimisation, multi-step agentic systems, and open research frontiers,
+drawing substantially on Lambert's practical insights.
+
+\medskip
+
+\textbf{Who this book is for.}\quad
+We have written with three overlapping audiences in mind.
+
+\emph{Graduate students in machine learning and AI} who want a mathematically honest account
+of reinforcement learning that does not stop at the classical results but carries them all the
+way to the frontier of language-model alignment.
+
+\emph{ML engineers and practitioners} who have encountered RLHF in the context of language
+models and want to understand the theoretical machinery underneath the implementation, so
+that they can debug, extend, and improve it with confidence.
+
+\emph{Researchers transitioning from classical supervised or unsupervised learning to
+reinforcement learning}, including those whose primary interest is alignment, safety, or
+evaluation, who need a solid grounding in the underlying concepts before engaging with the
+research literature.
+
+The book is not aimed at complete beginners to machine learning; some prior exposure to the
+ideas of the field is assumed.  It is, however, self-contained with respect to reinforcement
+learning itself: no prior knowledge of RL is required.
+
+\medskip
+
+\textbf{Prerequisites.}\quad
+The reader is assumed to be comfortable with basic probability theory (random variables,
+expectations, conditional probability, Bayes' rule), linear algebra (vectors, matrices,
+eigenvalues), and single- and multi-variable calculus (derivatives, gradients, the chain
+rule).  Familiarity with the core concepts of supervised machine learning\,---\,loss
+functions, gradient descent, neural networks, overfitting\,---\,will make Parts~III and~IV
+significantly more accessible, though we recall the key ideas where they are needed.
+Python fluency is useful for the implementation-oriented material in the appendices but is
+not necessary to follow the theoretical development.
+
+\medskip
+
+\textbf{How to read this book.}\quad
+The four parts of the book form a natural progression, but readers with different backgrounds
+may wish to enter at different points.
+
+\emph{Part~I (Foundations)} develops the classical theory from scratch: multi-armed bandits,
+Markov decision processes, dynamic programming, Monte Carlo methods, and
+temporal-difference learning.  A reader with no prior exposure to RL should work through
+these chapters in order.
+
+\emph{Part~II (Function Approximation and Deep RL)} moves to settings where tabular methods
+are no longer feasible.  It covers linear and nonlinear value-function approximation, policy
+gradient methods, and the actor-critic family, culminating in Proximal Policy Optimisation.
+Together with Part~I, this material constitutes a complete introduction to classical and
+deep RL that stands on its own.
+
+\emph{Part~III (RL for Language Models, Chapters~10--14)} applies everything developed in
+Parts~I and~II to the modern challenge of training and aligning large language models.
+Readers who are already fluent in classical RL may proceed directly here.  These chapters
+cover reward shaping and reward models (Chapter~10), the language-model training pipeline
+from pre-training through SFT (Chapter~11), Direct Preference Optimisation and its
+variants (Chapter~12), Group Relative Policy Optimisation and online RL with verifiable
+rewards (Chapter~13), and the practical engineering of RLHF at scale (Chapter~14).
+
+\emph{Part~IV (Frontiers, Chapters~15--17)} explores the cutting edge of the field:
+reasoning, tool use, and reinforcement finetuning (Chapter~15); multi-agent systems
+(Chapter~16); and a survey of open problems and emerging directions (Chapter~17).
+
+Each chapter closes with a set of exercises that range from straightforward verifications to
+more involved proofs and design questions.  We recommend attempting at least a few exercises
+per chapter: reinforcement learning is, appropriately, a subject best understood by doing.
+
+\medskip
+
+\textbf{Companion code and notebooks.}\quad
+This book is accompanied by a public GitHub repository containing practical Jupyter
+notebooks, one for each chapter.  These notebooks provide runnable implementations of
+every major algorithm discussed in the text\,---\,from $\varepsilon$-greedy bandits and
+Q-learning to DQN, PPO, DPO, and GRPO\,---\,together with visualisations and guided
+experiments.  All notebooks are designed to run on free-tier platforms such as Google
+Colab or Kaggle, requiring no specialised hardware.  The repository also includes
+detailed exercise solutions with full proofs and derivations, as well as a framework
+for community translations into other languages.
+
+The companion repository is available at:
+
+\medskip
+\centerline{\url{https://github.com/pyshka501/rl-textbook}}
+\medskip
+
+\noindent
+We encourage readers to work through the notebooks alongside the relevant chapters.
+The combination of mathematical rigour in the text and hands-on experimentation in
+the code is, in our experience, the most effective way to develop genuine fluency in
+reinforcement learning.
+
+\medskip
+
+We hope this book serves you well, wherever on the path from classical theory to modern
+alignment practice you happen to be.
+
+\bigskip
+
+\hfill\textit{Moscow, 2026}

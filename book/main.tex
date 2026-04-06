@@ -1,0 +1,249 @@
+\documentclass[oneside,openany]{book}
+
+% ============================================================
+%  METADATA
+% ============================================================
+\title{Reinforcement Learning}
+\newcommand{\booksubtitle}{From Bandits to RLHF}
+\newcommand{\booklicense}{Creative Commons Zero 1.0 Universal}
+
+\author{Based on lectures by K.\,K.~Pchelin}
+\newcommand{\authorsubtitle}{Moscow, Russia}
+
+\makeatletter
+\newcommand{\booktitle}{\@title}
+\newcommand{\bookauthor}{\@author}
+\makeatother
+
+% ============================================================
+%  PACKAGES
+% ============================================================
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{fix-cm}
+\usepackage{lmodern}
+
+% Page geometry — wider text block, no binding offset for PDF
+\usepackage[bindingoffset=0in,
+            left=0.75in, right=0.75in,
+            top=.8125in, bottom=.9375in,
+            paperwidth=7in, paperheight=10in]{geometry}
+
+% Mathematics
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{mathtools}
+\usepackage{bbm}           % for \mathbbm{1} indicator function
+\usepackage{bm}            % bold math symbols
+
+% Graphics & Figures
+\usepackage{tikz}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{subcaption}
+\usetikzlibrary{positioning,arrows,arrows.meta,shapes.geometric,calc,fit,decorations.pathreplacing,patterns}
+
+% Tables
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+
+% Algorithms
+\usepackage[ruled,vlined,linesnumbered]{algorithm2e}
+
+% Lists
+\usepackage{enumitem}
+
+% Colors & Hyperlinks
+\usepackage{xcolor}
+\usepackage[colorlinks=true,
+            linkcolor=blue!60!black,
+            citecolor=green!50!black,
+            urlcolor=blue!70!black]{hyperref}
+
+% Index
+\usepackage{makeidx}
+\makeindex
+
+% Bibliography
+\usepackage[numbers,sort&compress]{natbib}
+
+% ToC depth
+\setcounter{tocdepth}{2}
+
+% Misc
+\usepackage{microtype}      % better typography
+\usepackage{pifont}          % for \ding symbols
+\newcommand{\xmark}{\ding{55}}  % cross mark
+\newcommand{\cmark}{\ding{51}}  % check mark
+\emergencystretch=1.5em      % allow slight stretching to avoid overfull hboxes
+
+% ============================================================
+%  THEOREM ENVIRONMENTS
+% ============================================================
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}[chapter]
+\newtheorem{example}{Example}[chapter]
+\newtheorem{exercise}{Exercise}[chapter]
+
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[chapter]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+
+\theoremstyle{remark}
+\newtheorem{remark}{Remark}[chapter]
+
+% ============================================================
+%  CUSTOM COMMANDS
+% ============================================================
+% Probability and expectation
+\DeclareMathOperator{\E}{\mathbb{E}}
+\DeclareMathOperator{\Var}{Var}
+\DeclareMathOperator{\Cov}{Cov}
+\newcommand{\Prob}{\mathbb{P}}
+
+% Sets
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\Z}{\mathbb{Z}}
+
+% RL-specific
+\newcommand{\cA}{\mathcal{A}}   % Action space
+\newcommand{\cS}{\mathcal{S}}   % State space
+\newcommand{\cR}{\mathcal{R}}   % Reward / Regret
+\newcommand{\cT}{\mathcal{T}}   % Transition
+\newcommand{\cN}{\mathcal{N}}   % Normal distribution
+\newcommand{\cP}{\mathcal{P}}   % Problem instance
+\newcommand{\cM}{\mathcal{M}}   % MDP tuple
+\newcommand{\cB}{\mathcal{B}}   % Banach space
+\newcommand{\concat}{\mathbin{\|}}  % concatenation
+\newcommand{\cV}{\mathcal{V}}   % Vocabulary
+\newcommand{\cD}{\mathcal{D}}   % Dataset
+\newcommand{\cF}{\mathcal{F}}   % Function class
+\newcommand{\cL}{\mathcal{L}}   % Loss
+
+% Indicator function
+\newcommand{\ind}{\mathbbm{1}}
+
+% argmax/argmin
+\DeclareMathOperator*{\argmax}{argmax}
+\DeclareMathOperator*{\argmin}{argmin}
+
+% KL divergence
+\newcommand{\KL}[2]{D_{\mathrm{KL}}\!\left(#1\;\|\;#2\right)}
+
+% ============================================================
+%  DOCUMENT
+% ============================================================
+\begin{document}
+\frontmatter
+
+% ---- Title Page ----
+\newgeometry{top=1.75in,bottom=.5in}
+\begin{titlepage}
+\begin{flushleft}
+
+\textbf{\fontfamily{qcs}\fontsize{48}{54}\selectfont Reinforcement\\Learning\\}
+
+\par\noindent\rule{\textwidth}{4pt}\\
+
+\begin{tikzpicture}
+\shade[bottom color=lightgray,top color=white]
+    (0,0) rectangle (\textwidth, 1.5)
+    node[midway] {\textbf{\large \textit{\booksubtitle}}};
+\end{tikzpicture}
+
+\begin{flushright}
+\Large First Edition
+\end{flushright}
+
+\vspace{\fill}
+
+\textbf{\large \bookauthor}\\[3.5pt]
+\textbf{\large \textit{\authorsubtitle}}
+
+\vspace{\fill}
+
+\begin{center}
+\includegraphics{booksvg.pdf}
+\end{center}
+
+\end{flushleft}
+\end{titlepage}
+\restoregeometry
+
+% Colophon
+\thispagestyle{empty}
+\begin{flushleft}
+\vspace*{\fill}
+This book was typeset using \LaTeX{} software.\\
+\vspace{\fill}
+Copyright \textcopyright{} \the\year{}  \bookauthor\\
+License: \booklicense
+\end{flushleft}
+
+\addtocounter{page}{2}
+
+% Preface
+\input{frontmatter/preface}
+
+% Table of Contents
+\tableofcontents
+
+% Notation
+\input{frontmatter/notation}
+
+% ============================================================
+\mainmatter
+
+% --- Part I: Foundations ---
+\part{Foundations}
+\include{chapters/ch01}  % Introduction to Reinforcement Learning
+\include{chapters/ch02}  % Multi-Armed Bandits
+\include{chapters/ch03}  % Markov Decision Processes and the Bellman Equation
+\include{chapters/ch04}  % Dynamic Programming
+\include{chapters/ch05}  % Monte Carlo Methods
+\include{chapters/ch06}  % Temporal Difference Learning
+
+% --- Part II: Function Approximation and Deep RL ---
+\part{Function Approximation and Deep RL}
+\include{chapters/ch07}  % Value Function Approximation
+\include{chapters/ch08}  % Policy Gradient Methods
+\include{chapters/ch09}  % Actor-Critic Methods and PPO
+
+% --- Part III: RL for Language Models ---
+\part{RL for Language Models}
+\include{chapters/ch10}  % Reward Shaping and Reward Models
+\include{chapters/ch11}  % Language Models and Post-Training
+\include{chapters/ch12}  % Direct Preference Optimization
+\include{chapters/ch13}  % GRPO and Online RL with Verifiable Rewards
+\include{chapters/ch14}  % Practical RLHF
+
+% --- Part IV: Frontiers ---
+\part{Frontiers}
+\include{chapters/ch15}  % Reasoning, Tool Use, and Reinforcement Finetuning
+\include{chapters/ch16}  % Multi-Agent Systems and RL
+\include{chapters/ch17}  % Open Problems and Emerging Directions
+
+% ============================================================
+\backmatter
+
+% Appendices
+\appendix
+\include{backmatter/appendix_math}
+
+% Afterword
+\input{backmatter/afterword}
+
+% Bibliography
+\bibliographystyle{plainnat}
+% \bibliography{references}
+
+% Index
+\addcontentsline{toc}{chapter}{Index}
+\printindex
+
+\end{document}

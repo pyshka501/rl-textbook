@@ -1,0 +1,131 @@
+\chapter*{Afterword: The Future of Reinforcement Learning}
+\addcontentsline{toc}{chapter}{Afterword}
+
+If you have read this far, you have traced a path from a gambler at a slot machine to the
+algorithms that shape how frontier AI systems speak to human beings.  That path turns out to
+be surprisingly straight.  The principle of optimality that Richard Bellman formulated in the
+1950s, the temporal-difference equations that Sutton and Barto developed in the 1980s, the
+policy gradient theorem proved at the turn of the millennium\,---\,these are not museum
+pieces.  They are the live machinery running inside systems that hundreds of millions of
+people interact with every day.  Seldom has the gap between mathematical abstraction and
+consequential engineering closed so quickly, and it is worth pausing, at the end of this
+journey, to reflect on where the field is heading.
+
+\medskip
+
+\textbf{Reinforcement learning at the centre of AI.}\quad
+For most of its history, reinforcement learning occupied an important but somewhat
+peripheral corner of the machine learning landscape.  Supervised learning dominated in
+practice; RL was the subject of beautiful theory and impressive demonstrations\,---\,Atari,
+Go, robotic locomotion\,---\,but its impact on deployed systems remained limited.  That has
+changed decisively.
+
+Today, RL is central to at least four of the most active frontiers in AI research.  In
+\emph{language and reasoning}, the alignment of large language models through human feedback
+and the training of models that can reason step-by-step through extended chains of thought
+both depend on policy optimisation.  In \emph{agentic systems}, models that plan over
+multiple steps, use tools, browse the web, and write and execute code are fundamentally RL
+agents operating in structured environments with delayed rewards.  In \emph{multimodal AI},
+the extension of RLHF-style training to vision, audio, and video is an active and rapidly
+moving area.  In \emph{robotics and embodied intelligence}, the sim-to-real pipeline that
+transfers policies trained in simulation to physical hardware remains one of the most
+promising routes to capable physical agents.  Across all of these domains, the conceptual
+vocabulary is the one you now possess: states, actions, rewards, policies, value functions,
+and the algorithms that optimise them.
+
+\medskip
+
+\textbf{The convergence of two traditions.}\quad
+One of the most striking intellectual developments of the past decade has been the discovery
+that classical RL and the training of large language models are not merely analogous but
+deeply unified.  The language-model fine-tuning problem is a Markov decision process: the
+state is the conversation history, the action is the next token, the policy is the language
+model, and the reward is a signal\,---\,human-provided or model-derived\,---\,about the
+quality of the response.
+
+This realisation means that every result in this book applies, in principle, to language
+models.  The bias-variance analysis of Monte Carlo versus temporal-difference methods
+re-emerges in debates about credit assignment in long reasoning chains.  The policy gradient
+theorem underlies REINFORCE-style reward optimisation.  The actor-critic architecture is the
+direct ancestor of the PPO-based RLHF pipelines used in practice.  Bellman's equations,
+written in the age of operations research, now govern the training of systems that compose
+poetry and prove theorems.
+
+This convergence is not a coincidence.  It reflects the universality of the sequential
+decision-making framework, and it suggests that further progress in language-model alignment
+will come, at least in part, from a deeper engagement with the theoretical tools that RL has
+accumulated over seventy years.
+
+\medskip
+
+\textbf{Open challenges.}\quad
+It would be dishonest to close on a note of pure triumph.  Reinforcement learning, for all
+its recent successes, faces serious open problems, and intellectual honesty requires naming
+them.
+
+\emph{Sample efficiency} remains a fundamental limitation.  Humans learn to play most games
+competently after a few hours of practice; the best RL agents require millions of
+environment interactions.  Closing this gap\,---\,through better exploration, structured
+world models, or transfer learning\,---\,is one of the deepest open questions in the field.
+
+\emph{Safety and robustness} are increasingly urgent.  Reward hacking, where an agent
+finds unintended ways to maximise a misspecified reward signal, is not merely a theoretical
+curiosity; it has been observed in deployed systems.  Ensuring that RL agents behave
+reliably when their environment shifts, when their reward model is imperfect, or when
+adversaries are present is a problem of both theoretical and practical importance.
+
+\emph{Multi-agent coordination} introduces a new layer of complexity that single-agent
+theory does not address.  Systems composed of many interacting agents\,---\,whether
+cooperating robots or competing market participants\,---\,exhibit emergent dynamics that
+remain poorly understood and difficult to control.
+
+\emph{Scalable oversight} is perhaps the most distinctively modern challenge.  As AI systems
+become more capable, human evaluators become less able to reliably judge the quality of
+their outputs.  How do we maintain meaningful human control over a system whose reasoning
+may already exceed the evaluator's ability to verify?  Constitutional AI, debate, and
+recursive reward modelling are early attempts to answer this question, but a satisfying
+solution remains elusive.
+
+\emph{Reward specification} underlies all of the above.  The problem of expressing human
+values, goals, and preferences as a reward function that can be optimised without adverse
+side effects is, at its core, a philosophical problem as much as a technical one.  Progress
+here will require collaboration between the RL community, alignment researchers, ethicists,
+and domain experts.
+
+\medskip
+
+\textbf{A personal note.}\quad
+Writing a textbook is an act of optimism.  It presupposes that the ideas contained within it
+are worth transmitting, that the reader's time is well spent engaging with them, and that
+the field will be better for having more people who understand it deeply.  We hold all three
+of these beliefs sincerely.
+
+Thank you for the time and attention you have invested in this material.  Learning
+reinforcement learning is not trivial: the mathematics is demanding, the intuitions are
+sometimes counterintuitive, and the gap between theory and working implementation can be
+humbling.  If you have made it through, you are better equipped than the vast majority of
+practitioners to reason carefully about the systems that will shape the coming decade.
+
+We hope you will use that knowledge not merely to build more capable systems, but to build
+better ones\,---\,systems that are safe, interpretable, and genuinely beneficial.  The
+field needs people who take both the capability and the responsibility seriously, and we
+believe you are now in a position to contribute to both.
+
+\medskip
+
+\textbf{A closing thought.}\quad
+In the preface, we described reinforcement learning as the study of how an agent learns to
+act well in a world it does not fully understand, guided by the sparse and sometimes
+misleading signal of reward.  That description applies, with only slight modification, to
+the human condition itself.  Perhaps that is why the framework resonates so deeply, and why
+the best researchers in the field are animated by something more than technical curiosity.
+
+Reinforcement learning, at its most ambitious, is a theory of how intelligence can improve
+through experience.  If we get it right\,---\,the mathematics, the engineering, and the
+values embedded in the reward signals we choose\,---\,it may prove to be one of the most
+important intellectual contributions of our era.  The work is far from finished.  We
+encourage you to pick up where this book leaves off.
+
+\bigskip
+
+\hfill\textit{Moscow, 2026}

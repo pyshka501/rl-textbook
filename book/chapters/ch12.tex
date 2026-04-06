@@ -1,0 +1,687 @@
+\chapter[DPO and Alignment Methods]{Direct Preference Optimisation and Alignment Methods}
+\label{ch:dpo}
+
+\begin{quote}
+\itshape
+The simplest solution to a problem is often the one that rearranges what you already know, rather than adding new machinery.
+\end{quote}
+
+\bigskip
+
+The RLHF pipeline described in Chapter~\ref{ch:reward-models} involves four distinct neural networks: the reference policy, the policy being trained, the reward model, and (in PPO) a value function critic. Training all four simultaneously demands extraordinary engineering effort. The reward model must be trained, evaluated, and frozen before RL begins. The critic must be initialised and kept synchronised with the actor. GPU memory must accommodate at least two full model copies\,---\,often more when using PPO's clipped surrogate or computing the KL penalty against the reference. In practice, this complexity is a significant barrier: RLHF with PPO at the scale of GPT-4 or Claude requires sophisticated distributed training infrastructure, careful hyperparameter tuning across multiple stages, and vigilant monitoring for reward hacking.
+
+Direct Preference Optimisation (Rafailov et al., 2023)\index{Direct Preference Optimisation (DPO)} asks a subversive question: do we need the reward model at all? The answer, as Chapter~\ref{ch:reward-models} hinted in Remark~\ref{rem:dpo-connection}, is no. The optimal policy under the KL-regularised RLHF objective is related to the reward function through an invertible reparametrisation. Substituting this reparametrisation into the Bradley--Terry preference model causes the intractable partition function to cancel, leaving a loss that depends only on the policy and the reference policy\,---\,quantities that can be computed with a single forward pass. The reward model is eliminated entirely.
+
+This chapter develops the theory and practice of DPO and the broader family of \emph{direct alignment algorithms}\index{direct alignment algorithm} that it inspired. Section~\ref{sec:dpo-motivation} explains the motivation for bypassing the reward model. Section~\ref{sec:dpo-derivation} presents the full derivation of the DPO objective from first principles, carrying every algebraic step. Section~\ref{sec:dpo-algorithm} describes the practical training algorithm, data requirements, and implementation details. Section~\ref{sec:dpo-variants} covers the principal variants\,---\,IPO, KTO, cDPO, and ORPO\,---\,each of which addresses a distinct limitation of the base algorithm. Section~\ref{sec:dpo-limitations} analyses the structural weaknesses of all offline direct alignment methods, including the distribution shift problem and the absence of online exploration. Section~\ref{sec:online-rl-production} explains why online RL remains essential in production systems and describes the engineering patterns that make it tractable. Section~\ref{sec:alignment-comparison} presents a comprehensive comparison of all major alignment methods, from PPO to GRPO, across the dimensions that matter most in practice. Section~\ref{sec:ch12-summary} summarises the chapter.
+
+% ===========================================================
+\section{From RLHF to Direct Alignment}
+\label{sec:dpo-motivation}
+
+\subsection{The Cost of the Reward Model}
+
+The standard RLHF pipeline has three stages. First, a supervised fine-tuned (SFT) policy $\pi_\mathrm{SFT}$ is trained on demonstration data. Second, a reward model $r_\psi$ is trained on preference data $\mathcal{D} = \{(x^{(i)}, y_w^{(i)}, y_l^{(i)})\}$ by minimising the Bradley--Terry loss~\eqref{eq:rm-loss}. Third, the policy is fine-tuned with PPO against $r_\psi$ subject to a KL penalty towards $\pi_\mathrm{SFT}$. Each stage introduces its own engineering complexity and failure modes.
+
+\index{reward model!cost of training}
+The reward model stage is particularly burdensome. It requires a separate set of hyperparameters (learning rate, batch size, margin), a separate evaluation protocol (pairwise accuracy on a held-out set), and a deployment step that makes the trained model available as a reward signal during RL. The reward model is typically the same size as the policy, meaning it must fit in GPU memory alongside the policy, the reference policy, and the PPO value function\,---\,a total of up to four model copies. At the 70B parameter scale, this approaches the practical limit of even the largest GPU clusters.
+
+Beyond memory, the reward model is a source of instability. If the reward model is undertrained, it will not provide a useful gradient signal and the policy will stall. If it is overtrained, the policy will rapidly find and exploit its failure modes (reward hacking). Since the reward model is frozen during PPO, there is no mechanism for it to adapt as the policy distribution shifts away from the data on which the reward model was trained\,---\,a form of covariate shift that grows more severe as training progresses.
+
+\subsection{Simplicity, Memory, and Stability}
+
+A direct alignment algorithm\index{direct alignment algorithm} replaces the two-stage reward-model-then-RL pipeline with a single supervised-style objective computed directly on preference data. The advantages are significant.
+
+\begin{description}[leftmargin=!,labelwidth=3.5cm]
+  \item[Memory footprint] DPO requires only two model copies: the policy being trained and the frozen reference policy. This halves the memory requirement compared to PPO, which needs the policy, the reference, the reward model, and the value function critic.
+  \item[Training stability] The DPO loss is a binary cross-entropy objective. It is smooth, has bounded gradients, and does not suffer from the instabilities associated with PPO's clipped surrogate objective or the moving reward signal of online RL.
+  \item[No reward hacking] Because there is no explicit reward model to overfit, DPO cannot exhibit the classic reward hacking failure mode. The policy cannot exploit the gap between a proxy reward model and the true human preference, because the preference signal is incorporated directly into the loss.
+  \item[Simplicity of implementation] DPO reduces to approximately twenty lines of PyTorch. There is no need for a rollout buffer, a critic network, advantage estimation, or PPO clipping. The entire pipeline resembles supervised fine-tuning, making it accessible to practitioners without RL infrastructure.
+\end{description}
+
+These advantages come at a cost, which Sections~\ref{sec:dpo-limitations} and~\ref{sec:online-rl-production} examine in detail. The critical limitation is that DPO is fundamentally an \emph{offline} method: it trains on a fixed preference dataset collected under a different (typically the SFT) policy. As the trained policy moves away from the reference, the preference data becomes stale, and the implicit reward signal ceases to accurately reflect what the improved policy would actually prefer. This distribution shift problem is unavoidable in any offline direct alignment algorithm, and it motivates the continued relevance of online RL described in Section~\ref{sec:online-rl-production}.
+
+% ===========================================================
+\section{Deriving DPO}
+\label{sec:dpo-derivation}
+
+\subsection{The KL-Constrained Objective}
+
+We begin from the KL-regularised RLHF objective introduced in Chapter~\ref{ch:reward-models}. Given a prompt $x$ and a reward function $r$, the objective is
+\begin{equation}
+\label{eq:dpo-rlhf-obj}
+J(\pi_\theta) = \E_{x \sim \mathcal{D},\; y \sim \pi_\theta(\cdot|x)}\!\bigl[r(x, y)\bigr]
+- \beta\,\KL{\pi_\theta(\cdot|x)}{\pi_\mathrm{ref}(\cdot|x)},
+\end{equation}
+where $\beta > 0$ controls the strength of the KL penalty and $\pi_\mathrm{ref}$ is the SFT reference policy. The objective trades off reward maximisation against staying close to the reference. We showed in Theorem~\ref{thm:kl-optimal-policy} that the unique optimal policy is
+\begin{equation}
+\label{eq:dpo-optimal-policy}
+\pi^*(y \mid x) = \frac{\pi_\mathrm{ref}(y \mid x)\,\exp\!\bigl(r(x, y)/\beta\bigr)}{Z(x)},
+\end{equation}
+where the partition function is $Z(x) = \sum_y \pi_\mathrm{ref}(y \mid x)\,\exp(r(x, y)/\beta)$.
+
+\subsection{The Optimal Policy Reparametrisation}
+
+Taking logarithms of both sides of~\eqref{eq:dpo-optimal-policy} and rearranging yields the \emph{reward reparametrisation}:
+\begin{equation}
+\label{eq:dpo-reparam}
+r(x, y) = \beta\log\frac{\pi^*(y \mid x)}{\pi_\mathrm{ref}(y \mid x)} + \beta\log Z(x).
+\end{equation}
+This identity expresses the reward in terms of the optimal policy and the partition function. Two features of this identity are crucial.
+
+First, the identity holds for \emph{any} reward function $r$ and its corresponding optimal policy $\pi^*$. It is not an approximation; it is an exact algebraic consequence of the optimality conditions.
+
+Second, the partition function $Z(x)$ depends only on the prompt $x$, not on the specific response $y$. This means that when we compute the \emph{difference} in reward between two responses $y_w$ and $y_l$ to the same prompt $x$, the partition function cancels:
+\begin{equation}
+\label{eq:dpo-reward-diff}
+r(x, y_w) - r(x, y_l)
+= \beta\log\frac{\pi^*(y_w \mid x)}{\pi_\mathrm{ref}(y_w \mid x)}
+- \beta\log\frac{\pi^*(y_l \mid x)}{\pi_\mathrm{ref}(y_l \mid x)}.
+\end{equation}
+The intractable $\log Z(x)$ term has vanished.
+
+\subsection{Substituting into the Bradley--Terry Model}
+
+Recall the Bradley--Terry preference model from Chapter~\ref{ch:reward-models}: the probability that a human prefers $y_w$ over $y_l$ given prompt $x$ is
+\begin{equation}
+\label{eq:dpo-bt}
+\Prob(y_w \succ y_l \mid x) = \sigma\bigl(r(x, y_w) - r(x, y_l)\bigr).
+\end{equation}
+Substituting the reward difference~\eqref{eq:dpo-reward-diff} into~\eqref{eq:dpo-bt}, and replacing $\pi^*$ with the parametric policy $\pi_\theta$ (since $\pi^*$ is what we are trying to learn), gives
+\begin{equation}
+\label{eq:dpo-pref-prob}
+\Prob(y_w \succ y_l \mid x) = \sigma\!\left(\beta\log\frac{\pi_\theta(y_w \mid x)}{\pi_\mathrm{ref}(y_w \mid x)}
+- \beta\log\frac{\pi_\theta(y_l \mid x)}{\pi_\mathrm{ref}(y_l \mid x)}\right).
+\end{equation}
+This is the DPO preference probability. It depends only on the log-ratios of the policy to the reference, which can be computed with two forward passes through the language model (one for $y_w$ and one for $y_l$).
+
+\subsection{The DPO Loss}
+
+Given a dataset $\mathcal{D} = \{(x^{(i)}, y_w^{(i)}, y_l^{(i)})\}_{i=1}^N$ of human preferences, the negative log-likelihood of the observed preferences under the model~\eqref{eq:dpo-pref-prob} is the DPO loss:
+
+\begin{definition}[DPO Loss]
+\label{def:dpo-loss}
+\index{DPO loss}
+The \textbf{Direct Preference Optimisation (DPO) loss} is
+\begin{equation}
+\label{eq:dpo-loss}
+\boxed{
+\mathcal{L}_\mathrm{DPO}(\theta)
+= -\frac{1}{N}\sum_{i=1}^{N}
+\log\sigma\!\left(
+\beta\log\frac{\pi_\theta(y_w^{(i)} \mid x^{(i)})}{\pi_\mathrm{ref}(y_w^{(i)} \mid x^{(i)})}
+- \beta\log\frac{\pi_\theta(y_l^{(i)} \mid x^{(i)})}{\pi_\mathrm{ref}(y_l^{(i)} \mid x^{(i)})}
+\right).
+}
+\end{equation}
+\end{definition}
+
+The DPO loss is a binary cross-entropy loss where the ``logit'' for each pair is the difference in implicit log-reward between the preferred and dispreferred responses. Minimising $\mathcal{L}_\mathrm{DPO}$ is equivalent to maximising the likelihood of the observed preference annotations under the reparametrised Bradley--Terry model.
+
+\begin{proposition}[Gradient structure of the DPO loss]
+\label{prop:dpo-gradient}
+\index{DPO loss!gradient}
+For a single preference pair $(x, y_w, y_l)$, let
+\[
+h_\theta = \beta\log\frac{\pi_\theta(y_w|x)}{\pi_\mathrm{ref}(y_w|x)}
+         - \beta\log\frac{\pi_\theta(y_l|x)}{\pi_\mathrm{ref}(y_l|x)}
+\]
+be the implicit reward difference. The gradient of $\mathcal{L}_\mathrm{DPO}$ with respect to $\theta$ is
+\begin{equation}
+\label{eq:dpo-gradient}
+\nabla_\theta \mathcal{L}_\mathrm{DPO}
+= -\beta\,\sigma(-h_\theta)\bigl[
+  \nabla_\theta\log\pi_\theta(y_w|x)
+  - \nabla_\theta\log\pi_\theta(y_l|x)
+\bigr].
+\end{equation}
+The factor $\sigma(-h_\theta) \in (0,1)$ weights the update: it is large (close to~$1$) when the policy currently assigns similar implicit reward to both responses (the pair is hard), and small (close to~$0$) when the policy already strongly prefers $y_w$ (the pair is easy). The gradient increases the log-probability of $y_w$ and decreases the log-probability of $y_l$, weighted by how uncertain the current model is.
+\end{proposition}
+
+\begin{proof}
+Let $\mathcal{L} = -\log\sigma(h_\theta)$. Since $\frac{d}{dh}\log\sigma(h) = \sigma(-h) = 1 - \sigma(h)$, we have
+\[
+\nabla_\theta \mathcal{L} = -\sigma(-h_\theta)\,\nabla_\theta h_\theta.
+\]
+Computing $\nabla_\theta h_\theta$: since the reference model $\pi_\mathrm{ref}$ has no dependence on $\theta$,
+\[
+\nabla_\theta h_\theta = \beta\,\nabla_\theta\log\pi_\theta(y_w|x) - \beta\,\nabla_\theta\log\pi_\theta(y_l|x).
+\]
+Combining gives~\eqref{eq:dpo-gradient}.
+\end{proof}
+
+\begin{remark}[DPO as supervised fine-tuning with contrastive weighting]
+\label{rem:dpo-sft}
+Equation~\eqref{eq:dpo-gradient} reveals that DPO is structurally identical to two simultaneous supervised fine-tuning updates: a positive (likelihood-increasing) update on $y_w$ and a negative (likelihood-decreasing) update on $y_l$, both scaled by the per-pair confidence weight $\sigma(-h_\theta)$. This makes DPO amenable to the same implementation tricks as SFT: gradient checkpointing, mixed-precision training, LoRA adapters, and DeepSpeed ZeRO optimisation all apply without modification.
+\end{remark}
+
+\begin{example}[DPO loss computation]
+\label{ex:dpo-computation}
+Suppose that for a single pair $(x, y_w, y_l)$, the log-probabilities under the current policy and the reference are:
+\[
+\log\pi_\theta(y_w|x) = -3.2, \quad \log\pi_\mathrm{ref}(y_w|x) = -3.5,
+\quad \log\pi_\theta(y_l|x) = -2.8, \quad \log\pi_\mathrm{ref}(y_l|x) = -2.6.
+\]
+With $\beta = 0.1$, the implicit reward difference is
+\[
+h_\theta = 0.1\cdot(-3.2 - (-3.5)) - 0.1\cdot(-2.8 - (-2.6))
+= 0.1\cdot(0.3) - 0.1\cdot(-0.2) = 0.03 + 0.02 = 0.05.
+\]
+The loss for this pair is $-\log\sigma(0.05) = -\log(0.5125) \approx 0.669$. The confidence weight is $\sigma(-0.05) \approx 0.4875$, indicating the pair is nearly maximally uncertain and the gradient update will be large. After training, if $h_\theta$ reaches~$3$, the loss becomes $-\log\sigma(3) \approx 0.049$ and the confidence weight drops to $\sigma(-3) \approx 0.047$, reflecting that the policy has learned to clearly prefer $y_w$.
+\end{example}
+
+% ===========================================================
+\section{The DPO Algorithm}
+\label{sec:dpo-algorithm}
+
+\subsection{Training Procedure}
+
+The DPO training procedure is remarkably streamlined. It requires two model instances\,---\,the trainable policy $\pi_\theta$ and the frozen reference policy $\pi_\mathrm{ref}$\,---\,and a preference dataset. The reference policy is typically the SFT checkpoint, frozen at the start of DPO training.
+
+\begin{algorithm}[ht]
+\caption{Direct Preference Optimisation (DPO)}
+\label{alg:dpo}
+\KwIn{SFT checkpoint $\pi_\mathrm{ref}$; preference dataset $\mathcal{D}$; KL coefficient $\beta$; learning rate $\alpha$; batch size $B$}
+\KwOut{Aligned policy $\pi_\theta$}
+Initialise $\pi_\theta \leftarrow \pi_\mathrm{ref}$\;
+Freeze $\pi_\mathrm{ref}$ (no gradient updates)\;
+\For{each mini-batch $\{(x^{(i)}, y_w^{(i)}, y_l^{(i)})\}_{i=1}^{B} \subset \mathcal{D}$}{
+  \For{each pair $i = 1,\ldots, B$ in parallel}{
+    Compute $\ell_w^{(i)} \leftarrow \log\pi_\theta(y_w^{(i)}|x^{(i)})$ and $\ell_l^{(i)} \leftarrow \log\pi_\theta(y_l^{(i)}|x^{(i)})$\;
+    Compute $\hat\ell_w^{(i)} \leftarrow \log\pi_\mathrm{ref}(y_w^{(i)}|x^{(i)})$ and $\hat\ell_l^{(i)} \leftarrow \log\pi_\mathrm{ref}(y_l^{(i)}|x^{(i)})$ (no grad)\;
+    Compute $h^{(i)} \leftarrow \beta(\ell_w^{(i)} - \hat\ell_w^{(i)}) - \beta(\ell_l^{(i)} - \hat\ell_l^{(i)})$\;
+  }
+  Compute $\mathcal{L} \leftarrow -\frac{1}{B}\sum_{i=1}^B \log\sigma(h^{(i)})$\;
+  $\theta \leftarrow \theta - \alpha\,\nabla_\theta\,\mathcal{L}$\;
+  Log: mean reward margin $\frac{1}{B}\sum_i h^{(i)}$; fraction correct $\frac{1}{B}\sum_i \ind[h^{(i)} > 0]$\;
+}
+\Return $\pi_\theta$
+\end{algorithm}
+
+\subsection{Data Requirements}
+
+\index{preference dataset!DPO requirements}
+DPO requires a preference dataset of the form $\mathcal{D} = \{(x, y_w, y_l)\}$. Several practical considerations govern the quality and utility of this data.
+
+\textbf{Response quality gap.} The DPO loss is most informative when there is a clear quality gap between $y_w$ and $y_l$. If both responses are nearly identical, $h_\theta$ will be close to zero for any reasonable policy, and the gradient update will push in an arbitrary direction. Pairs should be selected so that $y_w$ and $y_l$ exhibit meaningfully different quality levels.
+
+\textbf{Source of responses.} The original DPO paper samples both $y_w$ and $y_l$ from $\pi_\mathrm{ref}$ (the SFT model). This is the most coherent choice for offline DPO: the training responses are drawn from the same distribution as the reference policy, so the implicit reward signal is well-calibrated. In practice, many datasets (such as Anthropic's HH-RLHF or OpenAI's WebGPT comparisons) pair model-generated responses with human-written alternatives or with responses from a weaker model\,---\,a valid approach, though it introduces an additional distribution mismatch.
+
+\textbf{Prompt distribution.} The prompts $x$ should reflect the target deployment distribution. A DPO-trained model will behave well on prompts similar to those in $\mathcal{D}$ and may degrade on out-of-distribution prompts\,---\,the same generalisation caveat that applies to all supervised methods.
+
+\subsection{Implementation Details}
+
+\textbf{Log-probability computation.} The sequence log-probability $\log\pi_\theta(y|x) = \sum_{t=1}^{|y|} \log\pi_\theta(y_t | x, y_{<t})$ is computed by concatenating the prompt and response, running a single forward pass, and summing the per-token log-probabilities at the response positions.
+
+\textbf{Length normalisation.} Responses of different lengths will have log-probabilities that differ simply due to length. To prevent the policy from learning a trivial length shortcut\,---\,assigning higher log-probability to shorter responses regardless of quality\,---\,it is standard practice to divide by response length: $\bar\ell = \log\pi_\theta(y|x) / |y|$.
+
+\textbf{Reference logit caching.} The reference model $\pi_\mathrm{ref}$ is frozen throughout training. The log-probabilities $\log\pi_\mathrm{ref}(y_w|x)$ and $\log\pi_\mathrm{ref}(y_l|x)$ can therefore be precomputed once and cached, eliminating the need to run the reference model forward pass during training. This saves approximately half the compute per training step.
+
+\textbf{Hyperparameters.} The principal hyperparameters are $\beta \in [0.01, 0.5]$ (the KL coefficient, controlling how far the policy moves from the reference; smaller $\beta$ allows more deviation), the learning rate (typically $1\times10^{-6}$ to $5\times10^{-6}$ for full fine-tuning, one to two orders of magnitude smaller than SFT), and the number of epochs (usually 1--3; more epochs risk overfitting the preference data).
+
+\subsection{The DPO vs.\ PPO Pipeline: A Diagram}
+
+The following diagram contrasts the full PPO-RLHF pipeline (top) with the DPO pipeline (bottom), illustrating the components that DPO eliminates.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  every node/.style={font=\small},
+  box/.style={draw, rounded corners=3pt, minimum width=2.0cm, minimum height=0.75cm,
+              align=center, text width=1.9cm},
+  eliminated/.style={draw, rounded corners=3pt, minimum width=2.0cm, minimum height=0.75cm,
+              align=center, text width=1.9cm, fill=red!10, draw=red!50, text=red!70},
+  active/.style={draw, rounded corners=3pt, minimum width=2.0cm, minimum height=0.75cm,
+              align=center, text width=1.9cm, fill=blue!8},
+  arrow/.style={->, >=Stealth, thick},
+  label/.style={font=\small\bfseries}
+]
+%% ---- PPO row (y=1.8) ----
+\node[label] at (-1.6, 1.8) {PPO:};
+\node[active] (ppo-ref)  at (0.8, 1.8)  {Reference\\policy $\pi_\mathrm{ref}$};
+\node[active] (ppo-sft)  at (3.2, 1.8)  {Rollout:\\$y \sim \pi_\theta$};
+\node[active] (ppo-rm)   at (5.6, 1.8)  {Reward\\model $r_\psi$};
+\node[active] (ppo-vf)   at (8.0, 1.8)  {Value fn\\$V_\phi$};
+\node[active] (ppo-ppo)  at (10.4,1.8)  {PPO\\update};
+
+\draw[arrow] (ppo-ref)  -- node[above,font=\tiny]{KL} (ppo-sft);
+\draw[arrow] (ppo-sft)  -- node[above,font=\tiny]{$r(x,y)$} (ppo-rm);
+\draw[arrow] (ppo-rm)   -- node[above,font=\tiny]{adv.} (ppo-vf);
+\draw[arrow] (ppo-vf)   -- (ppo-ppo);
+
+%% ---- DPO row (y=-0.4) ----
+\node[label] at (-1.6,-0.4) {DPO:};
+\node[active]     (dpo-ref) at (0.8, -0.4)  {Reference\\policy $\pi_\mathrm{ref}$};
+\node[active]     (dpo-pol) at (3.2, -0.4)  {Policy\\$\pi_\theta$};
+\node[eliminated] (dpo-rm)  at (5.6, -0.4)  {Reward\\model \xmark};
+\node[eliminated] (dpo-vf)  at (8.0, -0.4)  {Value fn\\\xmark};
+\node[active]     (dpo-loss)at (10.4,-0.4)  {DPO\\loss};
+
+\draw[arrow] (dpo-ref) -- node[above,font=\tiny]{$\log\pi_\mathrm{ref}$} (dpo-pol);
+\draw[arrow] (dpo-pol) -- node[above,font=\tiny]{$\log\pi_\theta$} (dpo-rm);
+\draw[arrow,draw=red!40,dashed] (dpo-rm) -- (dpo-vf);
+\draw[arrow,draw=red!40,dashed] (dpo-vf) -- (dpo-loss);
+
+% Direct arrow bypassing eliminated components
+\draw[arrow, bend right=28, color=blue!70] (dpo-pol.south) to
+  node[below,font=\tiny,color=blue!70]{direct (no RM needed)} (dpo-loss.south);
+
+% Bracket annotation
+\draw[decorate, decoration={brace,amplitude=5pt}, color=red!60]
+  (5.0, -1.05) -- (8.7, -1.05)
+  node[midway, below=5pt, font=\tiny, color=red!60, align=center]{eliminated in DPO};
+
+\end{tikzpicture}
+\caption{PPO (top) vs.\ DPO (bottom) training pipelines. The PPO pipeline requires four components: the reference policy (for KL), online rollouts, a reward model $r_\psi$, and a value function critic $V_\phi$. DPO eliminates the reward model and value function, computing the alignment signal directly from log-probability ratios.}
+\label{fig:dpo-vs-ppo}
+\end{figure}
+
+% ===========================================================
+\section{Variants of DPO}
+\label{sec:dpo-variants}
+
+The DPO objective, while elegant, makes specific assumptions about the preference model and the nature of the training data. Several variants have been proposed to relax these assumptions and address practical limitations.
+
+\subsection{IPO: Identity Preference Optimisation}
+\index{IPO (Identity Preference Optimisation)}
+
+DPO is derived by maximising the log-likelihood under the Bradley--Terry model, which is a \emph{soft} preference model: even deterministic preferences (one response is always chosen) yield a finite loss at any finite policy. However, Azar et al.\ (2023) observed that if preferences are perfectly consistent\,---\,a realistic idealisation when using an automated preference oracle\,---\,the DPO optimum degenerates: the policy is incentivised to increase the reward margin $h_\theta$ without bound, pushing log-probabilities towards $+\infty$ and $-\infty$. This \emph{overfitting to deterministic preferences} manifests as degenerate output distributions.
+
+The Identity Preference Optimisation (IPO) loss addresses this by replacing the log-sigmoid with a squared-error penalty:
+\begin{equation}
+\label{eq:ipo-loss}
+\mathcal{L}_\mathrm{IPO}(\theta)
+= \frac{1}{N}\sum_{i=1}^{N}
+\left(
+\log\frac{\pi_\theta(y_w^{(i)}|x^{(i)})}{\pi_\mathrm{ref}(y_w^{(i)}|x^{(i)})}
+- \log\frac{\pi_\theta(y_l^{(i)}|x^{(i)})}{\pi_\mathrm{ref}(y_l^{(i)}|x^{(i)})}
+- \frac{1}{2\beta}
+\right)^2.
+\end{equation}
+The target reward margin is $1/(2\beta)$: the policy should learn to assign an implicit reward difference of exactly $1/(2\beta)$ between preferred and dispreferred responses, no more. The squared loss provides a restoring force that penalises both under- and over-separation, preventing the unbounded-margin failure mode. IPO can be derived directly from the original KL-constrained objective without passing through the Bradley--Terry model, making it applicable even when the preference model is not logistic.
+
+\subsection{KTO: Kahneman-Tversky Optimisation}
+\index{KTO (Kahneman-Tversky Optimisation)}
+
+A fundamental requirement of DPO (and IPO) is \emph{paired} preference data: for each prompt $x$, both a preferred response $y_w$ and a dispreferred response $y_l$ must be available. Collecting such paired data requires presenting two responses to an annotator simultaneously\,---\,a comparison interface that is more expensive and less natural than simply asking whether a single response is good or bad.
+
+Ethayarajh et al.\ (2023) introduced Kahneman-Tversky Optimisation (KTO), which works with unpaired, binary feedback\,---\,each example $(x, y, z)$ consists of a prompt, a response, and a binary label $z \in \{0, 1\}$ indicating whether the response is good ($z=1$) or bad ($z=0$). KTO derives its objective from \emph{prospect theory}\index{prospect theory} (Kahneman and Tversky, 1979), specifically the observation that humans are loss-averse: the pain of a loss exceeds the pleasure of an equivalent gain.
+
+\begin{definition}[KTO loss]
+\label{def:kto-loss}
+\index{KTO loss}
+Let $\mathcal{D}_+ = \{(x, y) : z=1\}$ and $\mathcal{D}_- = \{(x, y) : z=0\}$. The KTO reference point is
+\[
+z_\mathrm{ref} = \E_{(x,y) \in \mathcal{D}} \!\left[\beta\,\KL{\pi_\theta(\cdot|x)}{\pi_\mathrm{ref}(\cdot|x)}\right],
+\]
+approximated in practice by $\beta \log\pi_\theta(y|x)/\pi_\mathrm{ref}(y|x)$ averaged over the batch. The \textbf{KTO loss} is
+\begin{equation}
+\label{eq:kto-loss}
+\mathcal{L}_\mathrm{KTO}(\theta)
+= \E_{(x,y)\in\mathcal{D}_+}\!\bigl[1 - \sigma(\hat{r}_\theta(x,y) - z_\mathrm{ref})\bigr]
++ \E_{(x,y)\in\mathcal{D}_-}\!\bigl[1 - \sigma(z_\mathrm{ref} - \hat{r}_\theta(x,y))\bigr],
+\end{equation}
+where $\hat{r}_\theta(x,y) = \beta\log(\pi_\theta(y|x)/\pi_\mathrm{ref}(y|x))$ is the implicit reward.
+\end{definition}
+
+Intuitively, KTO encourages the implicit reward of positive examples to exceed the reference point (so the human ``gains'' utility) and the implicit reward of negative examples to fall below it (so the human ``loses''\,---\,but the loss-averse framing means this is penalised asymmetrically). KTO is particularly attractive when preference datasets are collected through thumbs-up/thumbs-down interfaces, which are far more common at scale than side-by-side comparison interfaces.
+
+\subsection{cDPO: Conservative DPO}
+\index{cDPO (Conservative DPO)}
+
+Human preference annotations are noisy: annotators sometimes prefer the objectively worse response due to superficial features, time pressure, or inconsistency. Standard DPO treats all annotations with equal weight, which means a label-flipped pair\,---\,where $y_w$ is actually worse than $y_l$\,---\,will actively push the policy in the wrong direction.
+
+Conservative DPO (cDPO), proposed by Mitchell et al.\ (2023), addresses this by incorporating a label smoothing parameter $\epsilon \in [0, 0.5)$ into the DPO objective. Rather than treating each preference as a hard assignment, cDPO treats it as a soft signal with noise probability $\epsilon$:
+\begin{equation}
+\label{eq:cdpo-loss}
+\mathcal{L}_\mathrm{cDPO}(\theta)
+= -\frac{1}{N}\sum_{i=1}^{N}
+\Bigl[
+(1 - \epsilon)\log\sigma(h^{(i)}_\theta)
++ \epsilon\log\sigma(-h^{(i)}_\theta)
+\Bigr],
+\end{equation}
+where $h^{(i)}_\theta$ is the implicit reward difference defined in Definition~\ref{def:dpo-loss}. When $\epsilon = 0$, cDPO reduces exactly to DPO. When $\epsilon > 0$, the loss adds a small penalty for being too confident that $y_w$ is better, which regularises the policy against overfitting to noisy labels. The cDPO objective is equivalent to the label-smoothed reward model loss~\eqref{eq:rm-label-smooth} applied in the DPO reparametrisation.
+
+\subsection{ORPO: Odds Ratio Preference Optimisation}
+\index{ORPO (Odds Ratio Preference Optimisation)}
+
+All of the variants above separate the alignment objective from the language modelling objective: DPO trains on preference pairs, while the base SFT training is a separate prior stage. Hong et al.\ (2024) proposed Odds Ratio Preference Optimisation (ORPO), which unifies the two objectives into a single loss and eliminates the need for a reference model entirely.
+
+\begin{definition}[ORPO loss]
+\label{def:orpo-loss}
+\index{ORPO loss}
+The \textbf{ORPO loss} combines a supervised negative log-likelihood term on the preferred response with an odds-ratio penalty:
+\begin{equation}
+\label{eq:orpo-loss}
+\mathcal{L}_\mathrm{ORPO}(\theta)
+= -\log\pi_\theta(y_w|x)
+- \lambda\,\log\sigma\!\left(\log\frac{\mathrm{odds}_\theta(y_w|x)}{\mathrm{odds}_\theta(y_l|x)}\right),
+\end{equation}
+where $\mathrm{odds}_\theta(y|x) = \pi_\theta(y|x) / (1 - \pi_\theta(y|x))$ is the odds of the response under the policy, and $\lambda > 0$ is a mixing coefficient.
+\end{definition}
+
+The first term ensures the model continues to generate fluent, coherent text (supervised fine-tuning on the preferred response). The second term penalises cases where the policy's odds of generating $y_l$ are comparable to or exceed its odds of generating $y_w$. Because ORPO uses the \emph{odds ratio} rather than a log-ratio involving a reference model, no separate reference model is needed: the regularisation is implicit in the structure of the loss.
+
+ORPO is particularly attractive for very large models where maintaining a reference model copy is memory-prohibitive, and for settings where the model is being trained from scratch on preference data without a prior SFT stage.
+
+% ===========================================================
+\section{Limitations of Direct Alignment}
+\label{sec:dpo-limitations}
+
+\subsection{The Distribution Shift Problem}
+
+The fundamental limitation of DPO and all offline direct alignment algorithms is \emph{distribution shift}\index{distribution shift!DPO}. The preference dataset $\mathcal{D}$ is collected by presenting responses from some data-generating policy $\mu$\,---\,typically the SFT model $\pi_\mathrm{ref}$\,---\,to human annotators. The implicit reward signal in DPO is calibrated to this distribution: the log-ratio $\log(\pi_\theta / \pi_\mathrm{ref})$ is small (and the loss gradient is large) precisely for responses that are in the support of $\mu$.
+
+As training proceeds, $\pi_\theta$ moves away from $\pi_\mathrm{ref}$. Responses that were originally probable under $\mu$ become progressively less likely under $\pi_\theta$, and new responses that $\pi_\theta$ has learned to favour may not appear anywhere in $\mathcal{D}$. The DPO loss cannot provide any learning signal for responses outside its training distribution. This means that as the policy improves, it explores regions of response space where the preference labels it has been given are increasingly uninformative.
+
+Empirically, this manifests as a characteristic training curve: the DPO reward margin $h_\theta$ increases rapidly during the first few thousand steps as the policy learns the clear-cut preference distinctions in the data, then plateaus as the policy exhausts the information content of the fixed dataset. Further training yields diminishing returns, and continued training past this point can even cause the policy to \emph{degrade}\,---\,increasing the implicit reward margin for the training pairs while worsening performance on held-out prompts, a form of preference overfitting.
+
+\subsection{No Online Exploration}
+
+Related to distribution shift is the absence of online exploration\index{exploration!absence in DPO}. In online RL methods such as PPO, the policy continuously generates new responses, collects rewards, and updates. This allows the policy to explore the response space and collect feedback on the very responses it is currently likely to generate. The preference signal is always on-policy.
+
+DPO has no such mechanism. It operates entirely on a fixed, pre-collected dataset. If there exist high-quality responses that the SFT model would not have generated (and therefore do not appear in $\mathcal{D}$), DPO cannot discover them. This is particularly consequential for tasks that require compositional reasoning: a model that has learned to be slightly more accurate on step-by-step reasoning problems may now benefit from feedback on the specific reasoning patterns it is generating, which differ from those in the fixed training set.
+
+\subsection{Mode-Seeking vs.\ Mode-Covering}
+
+\index{mode-seeking!DPO}
+The Bradley--Terry model and the DPO loss are derived from a \emph{mode-seeking} perspective: the loss encourages the policy to assign high probability to preferred responses and low probability to dispreferred ones. In the limit, this pushes the policy towards a \emph{point mass} on the highest-reward response for each prompt.
+
+This mode-seeking tendency is sometimes desirable (for tasks with a unique correct answer, such as mathematical problem solving) but frequently undesirable (for tasks requiring diversity, such as creative writing or open-ended conversation). A mode-seeking policy may produce responses that score highly on preference metrics while being repetitive and lacking the variety that real users want. By contrast, online RL methods that use entropy regularisation or diversity bonuses can be tuned to produce more mode-covering distributions.
+
+\subsection{When DPO Fails}
+
+Based on the analysis above, DPO tends to underperform relative to online RL in the following scenarios.
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Long training horizons}: As more preference data is consumed and the policy diverges from the reference, distribution shift accumulates and performance plateaus or regresses.
+  \item \textbf{Tasks with verifiable correctness}: For mathematical reasoning or coding, an online verifier (unit tests, symbolic checker) provides a stronger and more reliable signal than static human preference annotations.
+  \item \textbf{High-stakes alignment}: When the goal is to produce a model that is safe and beneficial \emph{across the full deployment distribution}, online feedback from real users provides signal that a fixed dataset cannot anticipate.
+  \item \textbf{Continued improvement}: DPO converges to the optimal policy for the given fixed dataset. Further improvement requires new data, whereas online RL can keep improving as long as the environment provides feedback.
+\end{itemize}
+
+% ===========================================================
+\section{Online RL in Production}
+\label{sec:online-rl-production}
+
+\subsection{Why Online RL Matters}
+
+\index{online RL!production systems}
+The distinction between offline and online alignment is not merely academic. A production language model serves millions of users, generating billions of responses across an enormous diversity of topics, styles, and intents. No static preference dataset, however large, can anticipate this diversity. Users will ask questions the dataset collectors never imagined, request styles that differ from the training distribution, and find failure modes that only emerge at scale.
+
+Online reinforcement learning closes this loop. Rather than training once on a fixed dataset and deploying, an online RL system continuously collects feedback from real interactions\,---\,explicit (thumbs up/down, star ratings, preference choices) or implicit (session duration, follow-up questions, copy rate)\,---\,and updates the policy. The model's behaviour improves as it serves users, and the improvement is targeted at the actual deployment distribution, not a proxy dataset.
+
+This is precisely the deployment pattern of the leading commercial AI assistants. The GPT-4 technical report (OpenAI, 2023) describes continuous RLHF updates based on user feedback. Anthropic's Constitutional AI pipeline (Bai et al., 2022) uses RLHF with on-policy sampling to ensure the reward signal is calibrated to the current policy's output distribution. These systems do not treat alignment as a one-time training event; they treat it as a continuous production process.
+
+\subsection{On-Policy vs.\ Off-Policy Considerations}
+
+\index{on-policy!alignment}
+In the online setting, a critical design decision is whether to use \emph{on-policy} or \emph{off-policy} feedback. On-policy feedback is collected from the current policy: the model generates a response, the user provides feedback, and the model is updated on that feedback before generating the next response. Off-policy feedback is collected from an earlier version of the policy (or a different policy altogether) and is used to update the current policy.
+
+On-policy feedback is the gold standard for alignment. The reward signal is guaranteed to be on the distribution the policy is currently exploring, so there is no distribution shift. The update is equivalent to policy gradient with a sample-based advantage estimate. However, on-policy feedback is slow: feedback must be collected and processed before the next update, which limits the throughput of the training loop.
+
+Off-policy feedback (such as DPO on stored preference data) enables much higher throughput, as training is decoupled from collection. The cost is the distribution shift discussed in Section~\ref{sec:dpo-limitations}. In practice, production systems typically use a hybrid: a large off-policy replay buffer of historical feedback combined with a smaller stream of on-policy feedback, with importance weighting to correct for the distribution mismatch.
+
+\subsection{Catastrophic Forgetting Mitigation}
+
+\index{catastrophic forgetting}
+A persistent challenge in online RL is \emph{catastrophic forgetting}: as the policy is updated to improve on alignment, it may degrade on capabilities that were present in the SFT model. The model may become less fluent, less factually accurate, or less capable at tasks not represented in the current feedback stream.
+
+Several techniques mitigate catastrophic forgetting in production.
+
+\begin{description}[leftmargin=!,labelwidth=3.5cm]
+  \item[KL anchoring] The KL penalty $\beta\KL{\pi_\theta}{\pi_\mathrm{ref}}$ in the RL objective keeps the policy from drifting too far from the SFT checkpoint. However, if the SFT checkpoint itself is periodically updated (as is common in production), the anchor moves, potentially allowing slow but unbounded drift.
+  \item[Capability constraints] Separate evaluations on held-out capability benchmarks (MMLU, HumanEval, GSM8K) are run after each RL update. If any capability drops below a threshold, the update is rolled back or the KL coefficient is increased. This requires dedicated evaluation infrastructure but is the most principled safeguard.
+  \item[Replay buffers] Mixing old SFT examples with the online RL gradient ensures the policy continues to receive supervised signal on the full capability distribution. This is analogous to experience replay in DQN: the SFT examples act as ``anchors'' in experience space.
+  \item[LoRA-based fine-tuning] Restricting updates to a low-rank adapter (LoRA) rather than the full model parameters limits the degree of forgetting, since the base model weights remain fixed. Alignment is stored in the adapter; capabilities are preserved in the base model.
+\end{description}
+
+\subsection{Safety Constraints in Online RL}
+
+\index{safety constraints!online RL}
+Online RL introduces a safety risk that offline alignment does not: the model is updated on real user feedback, which may include adversarial, biased, or otherwise harmful signal. A production system must guard against several failure modes.
+
+\textbf{Reward gaming by users.} If users discover that certain response patterns receive high rewards (e.g., responses that agree with any user position, responses that are especially verbose), they may exploit this to steer the model's behaviour. Adversarial robustness in the reward signal requires anomaly detection and filtering of outlier feedback.
+
+\textbf{Feedback loop instability.} Positive feedback loops can cause the policy to drift rapidly towards a local mode. The KL penalty, combined with periodic evaluation against a held-out diverse prompt set, is the standard stabiliser.
+
+\textbf{Constrained policy optimisation.} For safety-critical properties (refusal of harmful requests, factual accuracy), one can augment the RL objective with Lagrangian constraints (Achiam et al., 2017; Bai et al., 2022): the policy optimises reward subject to the constraint that safety-relevant metrics remain above a floor. This converts the unconstrained RL problem into a constrained optimisation problem, solvable with dual-variable methods.
+
+\subsection{PPO vs.\ DPO in the Online Setting}
+
+\index{PPO!vs DPO online}
+The comparison between PPO and DPO is qualitatively different in the online and offline settings. In the offline setting (fixed preference dataset), DPO is competitive with or superior to PPO on many benchmarks: it is simpler, more stable, and requires less compute. In the online setting, PPO has a structural advantage that DPO cannot match.
+
+PPO collects feedback on-policy, updates the policy using that feedback, and repeats. The policy and the feedback source are always in sync. DPO, by contrast, requires a separate data collection phase before each training stage; each collection-training cycle is a discrete batch, not a continuous loop. This means that online DPO is effectively \emph{iterative DPO}\index{iterative DPO}: collect preferences from the current policy, run DPO for a few epochs, collect new preferences from the updated policy, and repeat. Iterative DPO substantially closes the gap with PPO by reducing distribution shift, but it introduces its own engineering overhead (repeated data collection and annotation) and is still inferior to PPO's fully online loop.
+
+In practice, the choice between PPO and DPO in production depends on the available infrastructure. A team with dedicated RL infrastructure, a fast reward model (or verifier), and the capacity for online rollout should prefer PPO or a PPO variant (such as GRPO). A team without RL infrastructure, or one that needs to align a model quickly with an existing preference dataset, should prefer DPO or one of its variants.
+
+\subsection{Practical Deployment Patterns}
+
+Based on the analysis above and observed practice at major AI labs, the following deployment patterns have emerged.
+
+\begin{description}[leftmargin=!,labelwidth=3.5cm]
+  \item[Bootstrap with DPO] Use DPO on an existing preference dataset to quickly produce an aligned model. This is the fastest path from SFT to a deployable, aligned model, suitable for initial releases.
+  \item[Refine with online RL] After deployment, collect on-policy feedback and run iterative DPO or PPO to continuously improve. The DPO-bootstrapped model provides a strong starting point with a relatively small KL budget available for further improvement.
+  \item[Capability-safety separation] Use offline DPO for safety alignment (which changes slowly and can be encoded in a static dataset) and online RL for helpfulness alignment (which must adapt to the evolving deployment distribution).
+  \item[Verifier-guided RL for reasoning] For tasks with verifiable correctness (math, code), use online RL with an automated verifier as the reward signal rather than human preferences. This allows unlimited on-policy data collection with no human annotation cost, and the verifier is free of the biases that affect human annotators.
+\end{description}
+
+% ===========================================================
+\section{Comprehensive Comparison of Alignment Methods}
+\label{sec:alignment-comparison}
+
+\subsection{Method Overview}
+
+Table~\ref{tab:alignment-comparison} provides a comprehensive comparison of the major alignment methods for large language models. The methods span the full spectrum from fully online policy gradient approaches to purely offline supervised alignment.
+
+\begin{table}[ht]
+\centering
+\caption{Comprehensive comparison of LLM alignment methods. ``RM'' = reward model; ``ref.\ model'' = reference policy required; ``paired'' = requires paired $(y_w, y_l)$ data; ``online'' = generates new responses during training. Memory footprint relative to one model copy (1$\times$). Stability: H = high, M = medium, L = low.}
+\label{tab:alignment-comparison}
+\footnotesize
+\begin{tabular}{@{}lcccccp{2.2cm}@{}}
+\toprule
+\textbf{Method} & \textbf{RM?} & \textbf{Paired?} & \textbf{Online?} & \textbf{Mem.} & \textbf{Stab.} & \textbf{Best for} \\
+\midrule
+PPO        & Yes  & No  & Yes & $4\times$ & M & Safety, RLHF at scale, online feedback \\
+REINFORCE  & Yes  & No  & Yes & $2\times$ & L & Simple tasks, baseline comparison \\
+RLOO       & Yes  & No  & Yes & $2\times$ & M & Low-resource online RL, no critic \\
+GRPO       & No*  & No  & Yes & $2\times$ & H & Reasoning, verifiable tasks, no critic \\
+DPO        & No   & Yes & No  & $2\times$ & H & Quick alignment, offline data \\
+IPO        & No   & Yes & No  & $2\times$ & H & Deterministic/auto preferences \\
+KTO        & No   & No  & No  & $2\times$ & H & Binary feedback, no comparison pairs \\
+cDPO       & No   & Yes & No  & $2\times$ & H & Noisy preference labels \\
+ORPO       & No   & Yes & No  & $1\times$ & H & No ref.\ model, memory-constrained \\
+\bottomrule
+\end{tabular}
+
+\smallskip
+{\footnotesize *GRPO uses a verifier or rule-based reward rather than a learned RM.}
+\end{table}
+
+\begin{table}[ht]
+\centering
+\caption{Pros and cons of each alignment method.}
+\label{tab:alignment-pros-cons}
+\footnotesize
+\begin{tabular}{@{}lp{3.5cm}p{3.5cm}@{}}
+\toprule
+\textbf{Method} & \textbf{Pros} & \textbf{Cons} \\
+\midrule
+PPO
+  & Fully online, handles complex reward signals, well-studied theoretically
+  & High memory (4 models), complex implementation, reward hacking risk \\
+\midrule
+REINFORCE
+  & Simple, unbiased policy gradient, easy to implement
+  & High variance, slow convergence, unstable without baseline \\
+\midrule
+RLOO
+  & Variance reduction via leave-one-out baseline, no critic needed
+  & Requires group sampling, still on-policy complexity \\
+\midrule
+GRPO
+  & No critic, stable, excels on verifiable tasks, strong empirical results
+  & Requires verifier or reward model; no natural extension to open-ended tasks \\
+\midrule
+DPO
+  & Simple, stable, SFT-like training, no RM, low memory
+  & Offline only, distribution shift, no exploration, plateaus \\
+\midrule
+IPO
+  & Fixes DPO overfitting, regulates margin, more robust to clean preferences
+  & Hyperparameter sensitive ($\beta$ controls margin target), no on-policy signal \\
+\midrule
+KTO
+  & Works with binary labels (no pairs needed), natural for production feedback
+  & Requires careful reference point estimation, less data-efficient than DPO \\
+\midrule
+cDPO
+  & Robust to label noise, natural regulariser, near-zero overhead over DPO
+  & $\epsilon$ must be tuned; too large $\epsilon$ prevents alignment \\
+\midrule
+ORPO
+  & No reference model needed, SFT + alignment in one pass, memory-efficient
+  & Less theoretically grounded; $\lambda$ requires tuning; no KL regularisation \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Choosing an Alignment Method by Goal}
+
+The choice of alignment method should be driven by the deployment goal, the available data, and the available compute infrastructure. The following guidelines distil the preceding analysis into practical recommendations.
+
+\textbf{Safety alignment.} For instilling safety constraints\,---\,refusing harmful requests, avoiding toxic output, maintaining constitutional principles\,---\,the primary concerns are coverage (the model should behave safely on the full deployment distribution) and stability (the constraints should not degrade over time). PPO with a safety-specific reward model and hard Lagrangian constraints is the most principled approach for flagship models. DPO or cDPO on a carefully curated safety-preference dataset is a practical and often sufficient alternative for smaller models or teams without RL infrastructure. KTO is particularly well-suited for safety alignment because safety labels are naturally binary (harmful / not harmful) rather than comparative.
+
+\textbf{Reasoning ability.} For improving performance on mathematical, logical, or coding tasks, the key insight is that these tasks have verifiable answers. This means a rule-based reward signal (correct/incorrect) can be used in place of human preference annotations, enabling unlimited on-policy data collection. GRPO\index{GRPO (Group Relative Policy Optimisation)} is the strongest choice here: it uses group sampling to estimate advantages without a critic, and the verifier-based reward provides a clean, unambiguous signal. The DeepSeek-R1 result (DeepSeek-AI, 2025) demonstrated that GRPO with a verifier-based reward can produce dramatic improvements in reasoning ability without any human preference data.
+
+\textbf{Instruction following.} Instruction following\,---\,the ability to complete diverse user requests accurately and helpfully\,---\,requires both broad coverage (many instruction types) and nuanced quality judgements (the difference between a good and great response to a given instruction). DPO on a large, diverse preference dataset (such as UltraFeedback or Alpaca Farm) is the workhorse method for instruction following. Iterative DPO\,---\,running multiple rounds of DPO with on-policy data collection between rounds\,---\,further improves coverage. PPO with a generalised reward model is the strongest option when online feedback is available.
+
+\textbf{Creative tasks.} Creative tasks (story generation, poetry, open-ended dialogue) require diversity: the aligned model should produce varied, imaginative output rather than converging to a single mode. DPO's mode-seeking tendency makes it a poor fit unless augmented with diversity regularisation. PPO with an entropy bonus or a diversity-promoting reward function is preferable. KTO with positive labels on diverse creative examples can also encourage broad coverage without the mode-collapsing tendency of contrastive pair-based methods.
+
+\textbf{Resource-constrained settings.} When memory or compute are severely limited, ORPO (which requires only one model copy) or DPO (two model copies) are the only feasible options. Both can be applied with LoRA adapters to reduce the trainable parameter count further, enabling alignment of large models on commodity hardware.
+
+\begin{example}[Choosing a method for a math tutoring assistant]
+\label{ex:alignment-choice}
+A team is developing a math tutoring assistant that should (a) solve problems correctly, (b) refuse to provide direct answers when a student should learn by doing, and (c) explain reasoning clearly. How should alignment be approached?
+
+For goal~(a), GRPO with a symbolic math verifier is ideal: responses can be verified automatically, on-policy data is unlimited, and no human annotation is needed.
+
+For goal~(b), a small safety-preference dataset of (problem, ``give answer'', ``guide without answer'') pairs can be aligned with DPO or KTO. The constraint is safety-like (binary: violates the no-direct-answer policy or not), making KTO particularly natural.
+
+For goal~(c), DPO on a dataset of human preference pairs (well-explained vs.\ poorly-explained solutions) is appropriate, supplemented by iterative DPO rounds using on-policy rollouts from the GRPO-improved model to avoid distribution shift.
+
+In practice, these three objectives are combined: GRPO handles the verifiable correctness objective, KTO handles the safety-like pedagogical constraint, and DPO handles the stylistic quality dimension. Each method is applied in a separate stage, with capability evaluation between stages to monitor for forgetting.
+\end{example}
+
+% ===========================================================
+\section{Summary}
+\label{sec:ch12-summary}
+
+This chapter developed the theory and practice of Direct Preference Optimisation and its relationship to the broader landscape of LLM alignment methods.
+
+The central insight of DPO (Section~\ref{sec:dpo-derivation}) is a two-step algebraic manipulation: the KL-regularised RLHF optimal policy can be rearranged to express the reward as a log-ratio of the optimal policy to the reference policy plus a prompt-dependent partition function. When this expression is substituted into the Bradley--Terry preference probability, the partition function cancels, leaving a loss that depends only on policy log-ratios\,---\,quantities computable with two forward passes. The reward model is eliminated without approximation.
+
+The DPO algorithm (Section~\ref{sec:dpo-algorithm}) reduces to binary cross-entropy on policy log-ratios, with a confidence weight $\sigma(-h_\theta)$ that focuses learning on uncertain pairs. The TikZ diagram (Figure~\ref{fig:dpo-vs-ppo}) illustrated the dramatic simplification relative to PPO: the reward model and value function are eliminated, reducing the required model copies from four to two.
+
+The DPO variants (Section~\ref{sec:dpo-variants}) each address a specific limitation. IPO prevents the unbounded-margin failure mode by imposing a squared target on the reward gap. KTO extends alignment to unpaired binary feedback using prospect theory. cDPO introduces label smoothing to handle noisy annotations. ORPO eliminates the reference model entirely by using an odds-ratio penalty embedded within the supervised loss.
+
+The distribution shift problem (Section~\ref{sec:dpo-limitations}) is the fundamental limitation shared by all offline direct alignment algorithms. As the policy moves away from the reference, the preference labels in the training set become progressively less informative, causing performance to plateau. The absence of online exploration means that DPO cannot discover the high-quality responses that the current policy is now capable of generating but which did not appear in the original dataset.
+
+Online RL in production (Section~\ref{sec:online-rl-production}) addresses these limitations by closing the loop between model behaviour and feedback. A production RL system continuously generates responses, collects feedback (explicit or implicit), and updates the policy. The principal engineering challenges are catastrophic forgetting (mitigated by KL anchoring, capability constraints, replay buffers, and LoRA), safety under adversarial feedback (mitigated by anomaly detection and constrained optimisation), and the PPO-vs-DPO tradeoff (resolved by infrastructure availability and the degree of distribution shift acceptable).
+
+The comprehensive comparison table (Section~\ref{sec:alignment-comparison}) provides a practical reference for choosing an alignment method by goal: PPO and GRPO for online settings and verifiable tasks, DPO and its variants for offline settings with available preference data, KTO for binary feedback, and ORPO for memory-constrained environments.
+
+\begin{description}[leftmargin=!,labelwidth=3.5cm]
+  \item[Chapter~\ref{ch:reward-models}] provides the foundation: the Bradley--Terry model, the KL-regularised objective, and the optimal policy reparametrisation that DPO exploits.
+  \item[Chapter~\ref{ch:practical-rlhf}] describes the PPO fine-tuning pipeline in full engineering detail, including the per-token KL reward, advantage estimation, and practical tricks for stable training.
+  \item[Chapter~\ref{ch:agents}] discusses alignment in the agentic setting, where the model must be aligned not just on single-turn responses but on multi-step trajectories.
+\end{description}
+
+% ===========================================================
+\section*{Exercises}
+\addcontentsline{toc}{section}{Exercises}
+
+\begin{exercise}
+\label{ex:dpo-derivation}
+Carry out the full DPO derivation from scratch. Starting from the KL-regularised objective~\eqref{eq:dpo-rlhf-obj}, prove that the optimal policy is~\eqref{eq:dpo-optimal-policy}. Then rearrange to obtain the reward reparametrisation~\eqref{eq:dpo-reparam}. Show explicitly that the partition function $Z(x)$ cancels when computing the reward difference $r(x, y_w) - r(x, y_l)$. Finally, substitute into the Bradley--Terry formula to obtain the DPO loss~\eqref{eq:dpo-loss}. At each step, identify which assumptions are exact and which would need to be modified if the preference model were not Bradley--Terry.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:dpo-gradient}
+Verify Proposition~\ref{prop:dpo-gradient} by explicit calculation. For a single preference pair with log-probabilities $\log\pi_\theta(y_w|x) = -2.0$, $\log\pi_\mathrm{ref}(y_w|x) = -2.4$, $\log\pi_\theta(y_l|x) = -1.5$, $\log\pi_\mathrm{ref}(y_l|x) = -1.3$, and $\beta = 0.1$:
+\begin{enumerate}
+  \item Compute the implicit reward difference $h_\theta$.
+  \item Compute the DPO loss for this pair.
+  \item Compute the confidence weight $\sigma(-h_\theta)$ and interpret it: is this pair easy or hard for the current policy?
+  \item Suppose $\log\pi_\theta(y_w|x)$ decreases by $0.3$ (the policy becomes less likely to produce $y_w$). Recompute $h_\theta$ and the loss, and explain qualitatively how the gradient changes.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:ipo-vs-dpo}
+The IPO loss~\eqref{eq:ipo-loss} replaces the log-sigmoid with a squared loss. 
+\begin{enumerate}
+  \item Show that the DPO loss has no finite minimiser when preferences are perfectly consistent (i.e., when $y_w \succ y_l$ with probability~$1$). \emph{Hint:} Consider what happens to $\mathcal{L}_\mathrm{DPO}$ as $h_\theta \to +\infty$.
+  \item Show that the IPO loss~\eqref{eq:ipo-loss} is minimised at $h_\theta^* = 1/(2\beta)$. Compute $h_\theta^*$ for $\beta = 0.1$ and interpret its value in terms of implicit reward gap.
+  \item For the numerical example in Exercise~\ref{ex:dpo-gradient}, compute the IPO loss and compare it to the DPO loss. Which is larger, and why?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:kto-prospect}
+The KTO objective is motivated by prospect theory. Formally, the Kahneman-Tversky value function $v : \R \to \R$ is concave for gains ($v > 0$) and convex and steeper for losses ($v < 0$), with $v(0) = 0$.
+\begin{enumerate}
+  \item Sketch the value function and explain why loss aversion implies $|v'(-\epsilon)| > |v'(\epsilon)|$ for small $\epsilon > 0$.
+  \item The KTO reference point $z_\mathrm{ref}$ plays the role of the zero of the value function. Explain intuitively why the implicit reward of a positive example should exceed $z_\mathrm{ref}$ and the implicit reward of a negative example should fall below it.
+  \item Show that KTO with $z_\mathrm{ref} = 0$ and equal numbers of positive and negative examples reduces to a form closely related to DPO if the positive and negative examples are drawn from the same paired dataset.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:cdpo-label-smooth}
+Show that the cDPO loss~\eqref{eq:cdpo-loss} can be derived from DPO by assuming that each preference label is flipped with probability $\epsilon$. That is, the annotator labels $y_w \succ y_l$ with probability $1-\epsilon$ and $y_l \succ y_w$ with probability $\epsilon$. Taking expectations of the DPO loss over this stochastic labelling model yields cDPO. What value of $\epsilon$ corresponds to a completely uninformative annotator, and what does cDPO reduce to in that limit?
+\end{exercise}
+
+\begin{exercise}
+\label{ex:distribution-shift}
+Consider a stylised model of distribution shift in DPO. Suppose the preference dataset is collected from the reference policy $\pi_\mathrm{ref}$, and after DPO training the policy $\pi_\theta$ has KL divergence $d = \KL{\pi_\theta}{\pi_\mathrm{ref}}$ from the reference.
+\begin{enumerate}
+  \item Argue that the fraction of responses in $\pi_\theta$ that also appear in the support of $\pi_\mathrm{ref}$ (and hence are covered by the preference dataset) decreases as $d$ increases.
+  \item In the worst case, if $\pi_\theta$ places all its mass on responses not in the support of $\pi_\mathrm{ref}$, what can the DPO gradient tell the policy about the quality of those responses?
+  \item Propose a practical mitigation: how would iterative DPO reduce the severity of distribution shift? What is the residual distribution shift after $k$ rounds of iterative DPO?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:online-rl-design}
+A team is deploying a customer service chatbot. The chatbot must (a) resolve customer issues correctly, (b) respond politely even to abusive messages, and (c) escalate to a human agent when appropriate. Design an alignment training pipeline for this chatbot, addressing the following:
+\begin{enumerate}
+  \item Which alignment method(s) would you use for each of the three objectives (a), (b), (c)?
+  \item How would you collect feedback in production: explicit, implicit, or both?
+  \item How would you prevent the online RL loop from degrading the model's language fluency or factual accuracy?
+  \item What safety mechanism would prevent adversarial users from systematically steering the policy?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:comparison-table}
+Examine the alignment method comparison in Table~\ref{tab:alignment-comparison}.
+\begin{enumerate}
+  \item Explain why PPO requires $4\times$ the memory of a single model while DPO requires only $2\times$.
+  \item A team has a dataset of 50{,}000 customer support interactions, each labelled as ``resolved'' or ``not resolved'', but with no paired comparisons between responses. Which alignment method would you recommend and why?
+  \item GRPO is listed as ``H'' (high) stability despite being an on-policy method. Explain why GRPO achieves higher stability than standard REINFORCE, referring to the group normalisation mechanism.
+  \item Under what conditions might DPO \emph{outperform} PPO even in an online setting? Be specific about the data and infrastructure assumptions.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:dpo-math-reasoning}
+Consider using DPO to improve a language model's mathematical reasoning ability. The preference dataset consists of pairs $(y_w, y_l)$ where $y_w$ is a correct chain-of-thought solution and $y_l$ is an incorrect one, both generated by the SFT model.
+\begin{enumerate}
+  \item After DPO training, the model's accuracy on in-distribution math problems improves from 45\% to 58\%. Propose an experiment to determine whether this improvement is due to (i) the model generating better reasoning steps or (ii) the model becoming better at guessing the final answer format.
+  \item Explain why the distribution shift problem (Section~\ref{sec:dpo-limitations}) is particularly severe for mathematical reasoning compared to, say, instruction following.
+  \item Describe how you would transition from DPO-based math alignment to GRPO-based math alignment. What would the transition sequence look like, and what would you use as the GRPO reward signal?
+\end{enumerate}
+\end{exercise}

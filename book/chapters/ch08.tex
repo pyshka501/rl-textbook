@@ -1,0 +1,765 @@
+\chapter{Policy Gradient Methods}
+\label{ch:pg}
+
+\begin{quote}
+\itshape
+Instead of looking for the policy indirectly through a value function, we look for it directly. We ask: given the current policy, in which direction should we nudge the parameters so that expected reward increases? That question has a beautiful answer, and it goes by the name of the policy gradient theorem.
+\end{quote}
+
+\bigskip
+
+All of the methods studied in Chapters~\ref{ch:dp}--\ref{ch:value-approx} share a common architecture: first estimate a value function, then derive a policy from it by acting greedily or $\varepsilon$-greedily.  Value functions are useful intermediate objects, but they are not strictly necessary.  One can instead parameterise the policy directly\,---\,as a differentiable function $\pi_\theta(a \mid s)$ of parameters $\theta$\,---\,and optimise those parameters to maximise expected return.  This is the \textbf{policy gradient}\index{policy gradient} idea, and it is the subject of the present chapter.
+
+Policy gradient methods have three compelling advantages over value-based methods.  First, they handle continuous and high-dimensional action spaces naturally: sampling from $\pi_\theta(\cdot \mid s)$ requires no inner maximisation.  Second, the learned policy can be stochastic, which is sometimes provably optimal (e.g.\ in partially observed environments or adversarial games) and is always a well-defined probability distribution.  Third, and perhaps most important for modern applications, the gradient of expected return with respect to policy parameters can be estimated purely from sampled trajectories, without ever needing to differentiate through the dynamics of the environment.
+
+The chapter is organised as follows.  Section~\ref{sec:pg-why} explains the motivation for direct policy optimisation.  Section~\ref{sec:pg-theorem} derives the policy gradient theorem\,---\,the mathematical foundation of the entire family\,---\,including full proofs of the likelihood-ratio trick, the causality reduction to reward-to-go, and the compact form involving $Q^{\pi_\theta}$.  Section~\ref{sec:reinforce} presents the REINFORCE algorithm with a worked numerical example.  Section~\ref{sec:baselines} proves that subtracting a state-dependent baseline leaves the gradient unbiased and derives the optimal baseline.  Section~\ref{sec:reinforce-baseline} combines value-function estimation with the policy gradient, giving REINFORCE with a learned baseline.  Section~\ref{sec:rloo} develops REINFORCE Leave-One-Out (RLOO), a modern estimator central to large-language-model alignment.  Section~\ref{sec:npg} introduces the natural policy gradient, which corrects the ordinary gradient for the curvature of the policy manifold.  Section~\ref{sec:pg-convergence} analyses convergence and the bias-variance tradeoff.  Section~\ref{sec:pg-comparison} compares estimators in a summary table.  The chapter closes with exercises.
+
+% ===========================================================
+\section{Why Optimise the Policy Directly?}
+\label{sec:pg-why}
+
+\subsection{Limitations of the Value-Based Approach}
+
+The value-based pipeline is: learn $\hat Q \approx Q^*$, then set $\pi(s) = \argmax_a \hat Q(s,a)$.  This pipeline breaks in two important ways when the action space is large or continuous.
+
+\begin{enumerate}[leftmargin=*]
+\item \textit{Continuous actions.}  If $\cA \subseteq \R^m$, computing $\argmax_{a \in \R^m} \hat Q(s,a)$ is itself a continuous optimisation problem that must be solved at every time step during execution.  Methods such as DDPG circumvent this by learning a separate maximiser network, but the result is an actor-critic architecture\,---\,which already moves beyond pure value-based learning.
+
+\item \textit{Very large discrete vocabularies.}  In token-level language generation, $|\cA|$ is the vocabulary size (often $50{,}000$ or more), and the episode length can be hundreds of steps.  Storing a separate value for every $(s,a)$ pair is infeasible; and even with function approximation, enumerating all actions to find the greedy one is expensive.
+\end{enumerate}
+
+Both difficulties vanish when the policy is a parameterised distribution $\pi_\theta(a \mid s)$: at execution time one simply draws $A_t \sim \pi_\theta(\cdot \mid S_t)$, regardless of the size of $\cA$.
+
+\subsection{Stochastic Policies Are Sometimes Necessary}
+
+Beyond scalability, there are principled reasons to want stochastic policies.  In partially observed environments the optimal policy is generally stochastic: the agent may need to randomise to hedge against hidden state.  In adversarial games a deterministic policy is exploitable, whereas a mixed-strategy equilibrium requires randomisation.  In exploration, a stochastic policy samples actions without requiring a separate $\varepsilon$-greedy mechanism, and the degree of exploration is automatically controlled by the entropy of $\pi_\theta$.
+
+\begin{remark}
+A deterministic policy $\mu_\theta(s)$ is a special case: it corresponds to a distribution concentrated at a single action.  The \emph{deterministic policy gradient} (DPG) theorem of Silver~et~al.\ (2014) extends the framework developed here to that degenerate case, and leads to algorithms such as DDPG and TD3.  We will not pursue this direction further; it is taken up in Chapter~\ref{ch:actor-critic}.
+\end{remark}
+
+\subsection{The Objective Function}
+
+\index{policy gradient!objective}
+In an episodic task of horizon $T$ we optimise the expected discounted return:
+\begin{equation}
+\label{eq:pg-objective}
+J(\theta) = \E_{\tau \sim p_\theta}\!\left[\sum_{t=0}^{T-1} \gamma^t R_{t+1}\right],
+\end{equation}
+where the trajectory $\tau = (S_0, A_0, R_1, S_1, A_1, R_2, \ldots, S_{T-1}, A_{T-1}, R_T)$ is distributed according to
+\begin{equation}
+\label{eq:trajectory-density}
+p_\theta(\tau) = \rho_0(S_0)\prod_{t=0}^{T-1} \pi_\theta(A_t \mid S_t)\, p(S_{t+1}, R_{t+1} \mid S_t, A_t),
+\end{equation}
+$\rho_0$ is the initial-state distribution, and $p$ is the (unknown) transition kernel.  In a continuing task the objective is the average reward $J(\theta) = \lim_{T\to\infty} \frac{1}{T}\E[\sum_{t=0}^{T-1} R_{t+1}]$; we focus on the episodic case for clarity, noting that the policy gradient theorem holds in both settings.
+
+The central question is: how does $J(\theta)$ change as we vary $\theta$?  Naively differentiating~\eqref{eq:pg-objective} seems to require differentiating through the unknown environment dynamics $p$.  The policy gradient theorem shows that this is unnecessary.
+
+% ===========================================================
+\section{The Policy Gradient Theorem}
+\label{sec:pg-theorem}
+
+\index{policy gradient theorem}
+
+\subsection{The Likelihood-Ratio Trick}
+
+We begin by computing $\nabla_\theta J(\theta)$ directly from the definition.  Because the horizon is finite, we may differentiate under the expectation:
+\begin{align}
+\nabla_\theta J(\theta)
+&= \nabla_\theta \sum_\tau p_\theta(\tau)\, R(\tau)
+= \sum_\tau \nabla_\theta p_\theta(\tau)\, R(\tau),
+\label{eq:pg-raw}
+\end{align}
+where $R(\tau) = \sum_{t=0}^{T-1} \gamma^t R_{t+1}$ is the total discounted return of trajectory $\tau$.  This sum is not an expectation, so it cannot be estimated by sampling\,---\,yet.  The \textbf{likelihood-ratio trick}\index{likelihood-ratio trick} (also called the \emph{score function trick} or \emph{REINFORCE trick}) converts it into one.  For any $p_\theta(\tau) > 0$:
+\begin{equation}
+\label{eq:log-derivative}
+\nabla_\theta p_\theta(\tau) = p_\theta(\tau)\, \nabla_\theta \log p_\theta(\tau).
+\end{equation}
+Substituting into~\eqref{eq:pg-raw} gives
+\begin{equation}
+\label{eq:pg-score}
+\nabla_\theta J(\theta) = \E_{\tau \sim p_\theta}\!\bigl[R(\tau)\, \nabla_\theta \log p_\theta(\tau)\bigr].
+\end{equation}
+
+Now we exploit the factored form~\eqref{eq:trajectory-density}.  Taking logarithms:
+\[
+\log p_\theta(\tau) = \log \rho_0(S_0) + \sum_{t=0}^{T-1} \log \pi_\theta(A_t \mid S_t) + \sum_{t=0}^{T-1} \log p(S_{t+1}, R_{t+1} \mid S_t, A_t).
+\]
+The first and third terms do not depend on $\theta$, so their gradients vanish:
+\begin{equation}
+\label{eq:log-traj-grad}
+\nabla_\theta \log p_\theta(\tau) = \sum_{t=0}^{T-1} \nabla_\theta \log \pi_\theta(A_t \mid S_t).
+\end{equation}
+Crucially, this formula involves only the \emph{policy}, not the transition kernel.  Substituting into~\eqref{eq:pg-score} yields the basic policy gradient estimator:
+
+\begin{theorem}[Basic policy gradient estimator]
+\label{thm:basic-pg}
+\index{policy gradient!basic estimator}
+Under the assumptions above,
+\begin{equation}
+\label{eq:basic-pg}
+\nabla_\theta J(\theta)
+= \E_{\tau \sim p_\theta}\!\left[
+  \left(\sum_{t=0}^{T-1} \gamma^t R_{t+1}\right)
+  \sum_{t=0}^{T-1} \nabla_\theta \log \pi_\theta(A_t \mid S_t)
+\right].
+\end{equation}
+\end{theorem}
+
+Equation~\eqref{eq:basic-pg} is already a valid gradient estimator: given a single trajectory $\tau$, the quantity inside the expectation is an unbiased sample of $\nabla_\theta J(\theta)$.  But it has a serious variance problem: the full return $R(\tau)$ multiplies the log-gradient of every action in the trajectory, even actions that occurred \emph{before} the rewards.  Intuitively, what happened at $t=3$ cannot retroactively change the reward received at $t=1$.  The next lemma formalises this.
+
+\subsection{The Causality Lemma and Reward-to-Go}
+
+\begin{lemma}[Causality]
+\label{lem:causality}
+\index{causality lemma}
+For every $t \in \{0, \ldots, T-1\}$,
+\begin{equation}
+\label{eq:causality}
+\E_{\tau \sim p_\theta}\!\left[\nabla_\theta \log \pi_\theta(A_t \mid S_t)\sum_{k=0}^{t-1} \gamma^k R_{k+1}\right] = 0.
+\end{equation}
+\end{lemma}
+
+\begin{proof}
+Let $C_t = \sum_{k=0}^{t-1} \gamma^k R_{k+1}$ denote the cumulative discounted reward \emph{before} time $t$.  This quantity is measurable with respect to the history $(S_0, A_0, R_1, \ldots, S_t)$ and in particular is independent of the choice of $A_t$ given $S_t$.  By the tower property of conditional expectation,
+\[
+\E\!\left[\nabla_\theta \log \pi_\theta(A_t \mid S_t)\, C_t\right]
+= \E\!\left[C_t\, \E\!\left[\nabla_\theta \log \pi_\theta(A_t \mid S_t) \mid S_t, \text{history}_{<t}\right]\right].
+\]
+For the inner expectation, fix $S_t = s$.  Then $A_t \sim \pi_\theta(\cdot \mid s)$, so
+\begin{align*}
+&\E\!\left[\nabla_\theta \log \pi_\theta(A_t \mid S_t) \mid S_t = s\right]
+= \sum_a \pi_\theta(a \mid s)\, \nabla_\theta \log \pi_\theta(a \mid s)\\
+&\quad= \sum_a \nabla_\theta \pi_\theta(a \mid s)
+= \nabla_\theta \!\sum_a \pi_\theta(a \mid s)
+= \nabla_\theta 1 = 0.
+\end{align*}
+Because the inner conditional expectation is identically zero, the outer expectation is also zero.
+\end{proof}
+
+\begin{remark}
+The key computation $\sum_a \pi_\theta(a \mid s)\, \nabla_\theta \log \pi_\theta(a \mid s) = \nabla_\theta \sum_a \pi_\theta(a \mid s) = 0$ is called the \textbf{score function identity}\index{score function identity}.  It is the algebraic engine that drives both the baseline theorem and the causality lemma.
+\end{remark}
+
+Define the \textbf{reward-to-go}\index{reward-to-go} from step $t$ as
+\begin{equation}
+\label{eq:rtg}
+G_t = \sum_{k=t}^{T-1} \gamma^{k-t} R_{k+1}, \qquad \bar G_t = \gamma^t G_t = \sum_{k=t}^{T-1} \gamma^k R_{k+1}.
+\end{equation}
+The full return decomposes as $R(\tau) = C_t + \bar G_t$.  Applying Lemma~\ref{lem:causality} to~\eqref{eq:basic-pg} we obtain the reduced estimator:
+
+\begin{theorem}[Reward-to-go policy gradient]
+\label{thm:rtg-pg}
+\index{policy gradient!reward-to-go form}
+\begin{equation}
+\label{eq:rtg-pg}
+\nabla_\theta J(\theta)
+= \E_{\tau \sim p_\theta}\!\left[\sum_{t=0}^{T-1} \nabla_\theta \log \pi_\theta(A_t \mid S_t)\, \bar G_t\right]
+= \E_{\tau \sim p_\theta}\!\left[\sum_{t=0}^{T-1} \gamma^t\, \nabla_\theta \log \pi_\theta(A_t \mid S_t)\, G_t\right].
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+Starting from Theorem~\ref{thm:basic-pg}, swap the order of summation over $t$ and the reward sum.  For each fixed $t$, decompose $R(\tau) = C_t + \bar G_t$ and apply the linearity of expectation:
+\[
+\E\!\left[\nabla_\theta \log \pi_\theta(A_t \mid S_t)\, R(\tau)\right]
+= \underbrace{\E\!\left[\nabla_\theta \log \pi_\theta(A_t \mid S_t)\, C_t\right]}_{=\,0 \text{ by Lemma~\ref{lem:causality}}}
++ \E\!\left[\nabla_\theta \log \pi_\theta(A_t \mid S_t)\, \bar G_t\right].
+\]
+Summing over $t$ and using $\bar G_t = \gamma^t G_t$ gives~\eqref{eq:rtg-pg}.
+\end{proof}
+
+\subsection{The Policy Gradient Theorem: Compact Form}
+
+The reward-to-go form~\eqref{eq:rtg-pg} is the most practical estimator.  It can also be written in a compact, state-action form by averaging over the discounted state-visitation measure.
+
+\begin{definition}[Discounted visitation measure]
+\label{def:visitation}
+\index{discounted visitation measure}
+\[
+d^{\gamma}_{\pi_\theta}(s) = \sum_{t=0}^{T-1} \gamma^t \Prob_{\pi_\theta}(S_t = s).
+\]
+\end{definition}
+
+\begin{theorem}[Policy Gradient Theorem]
+\label{thm:pgt}
+\index{policy gradient theorem}
+\begin{equation}
+\label{eq:pgt}
+\nabla_\theta J(\theta)
+= \sum_{s \in \cS} d^{\gamma}_{\pi_\theta}(s) \sum_{a \in \cA} \nabla_\theta \pi_\theta(a \mid s)\, Q^{\pi_\theta}(s,a)
+= \E_{S \sim d^{\gamma}_{\pi_\theta},\, A \sim \pi_\theta(\cdot \mid S)}\!\left[\nabla_\theta \log \pi_\theta(A \mid S)\, Q^{\pi_\theta}(S,A)\right].
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+Begin from~\eqref{eq:rtg-pg}.  By linearity of expectation,
+\[
+\nabla_\theta J(\theta)
+= \sum_{t=0}^{T-1} \gamma^t\, \E\!\left[\nabla_\theta \log \pi_\theta(A_t \mid S_t)\, G_t\right].
+\]
+Apply the tower property conditioning on $(S_t, A_t)$:
+\begin{align*}
+&\E\!\left[\nabla_\theta \log \pi_\theta(A_t \mid S_t)\, G_t\right]\\
+&\quad= \E\!\left[\nabla_\theta \log \pi_\theta(A_t \mid S_t)\, \E[G_t \mid S_t, A_t]\right]\\
+&\quad= \E\!\left[\nabla_\theta \log \pi_\theta(A_t \mid S_t)\, Q^{\pi_\theta}(S_t, A_t)\right].
+\end{align*}
+Expanding the outer expectation as a sum over $(s,a)$ and using the identity $\pi_\theta(a \mid s)\, \nabla_\theta \log \pi_\theta(a \mid s) = \nabla_\theta \pi_\theta(a \mid s)$:
+\[
+\nabla_\theta J(\theta)
+= \sum_{t=0}^{T-1} \gamma^t \sum_s \Prob(S_t = s) \sum_a \nabla_\theta \pi_\theta(a \mid s)\, Q^{\pi_\theta}(s,a).
+\]
+Collecting the coefficient of each state $s$ gives $\sum_t \gamma^t \Prob(S_t = s) = d^{\gamma}_{\pi_\theta}(s)$, which is Definition~\ref{def:visitation}, and the result follows.
+\end{proof}
+
+\begin{remark}
+\label{rem:pgt-model-free}
+Theorem~\ref{thm:pgt} is remarkable: the gradient of $J(\theta)$ with respect to the policy parameters depends on the transition dynamics \emph{only through} the action-value function $Q^{\pi_\theta}$\,---\,and even that can be estimated from samples, without knowing $p$.  This is what makes policy gradient methods truly model-free.
+\end{remark}
+
+% ===========================================================
+\section{REINFORCE}
+\label{sec:reinforce}
+
+\index{REINFORCE}
+
+\subsection{The Algorithm}
+
+REINFORCE (Williams, 1992) is the direct Monte Carlo implementation of Theorem~\ref{thm:rtg-pg}.  Since $\E_{\pi_\theta}[G_t \mid S_t, A_t] = Q^{\pi_\theta}(S_t, A_t)$, we can substitute the sampled return $G_t$ for the true $Q^{\pi_\theta}$:
+\begin{equation}
+\label{eq:reinforce-update}
+\theta \leftarrow \theta + \alpha \sum_{t=0}^{T-1} \gamma^t G_t\, \nabla_\theta \log \pi_\theta(A_t \mid S_t).
+\end{equation}
+This update is an unbiased stochastic gradient ascent step on $J(\theta)$.
+
+\begin{algorithm}[ht]
+\caption{REINFORCE (Williams, 1992)}
+\label{alg:reinforce}
+\KwIn{Policy $\pi_\theta$, step size $\alpha$, discount $\gamma$}
+Initialise $\theta$ arbitrarily\;
+\For{each episode}{
+  Generate $\tau = (S_0, A_0, R_1, \ldots, S_{T-1}, A_{T-1}, R_T)$ following $\pi_\theta$\;
+  \For{$t = 0, 1, \ldots, T-1$}{
+    Compute $G_t \leftarrow \sum_{k=t}^{T-1} \gamma^{k-t} R_{k+1}$\;
+    $\theta \leftarrow \theta + \alpha\, \gamma^t G_t\, \nabla_\theta \log \pi_\theta(A_t \mid S_t)$\;
+  }
+}
+\end{algorithm}
+
+Several implementation notes are worth making.  First, the factor $\gamma^t$ in front of the update shrinks the step size for later time steps, reflecting the lower discounted weight of the corresponding gradient term.  Some implementations omit this factor; doing so corresponds to optimising a slightly different (undiscounted) objective but is common in practice.  Second, since all updates in an episode can be computed at the episode's end, the loop over $t$ can be vectorised: compute all $G_t$ values by a single backward pass, then sum the weighted gradients.  Third, in the case of a softmax policy over actions, $\nabla_\theta \log \pi_\theta(a \mid s)$ is the score function, which equals $\phi(s,a) - \sum_{a'} \pi_\theta(a' \mid s)\, \phi(s,a')$ for feature vectors $\phi(s,a)$.
+
+\subsection{A Worked Example}
+
+\begin{example}[REINFORCE on a two-state MDP]
+\label{ex:reinforce-two-state}
+\index{REINFORCE!worked example}
+
+Consider the following simple episodic MDP:
+\begin{itemize}[leftmargin=*]
+\item Two states: $\cS = \{s_1, s_2\}$; two actions: $\cA = \{a_L, a_R\}$.
+\item Initial state always $s_1$.  Episode length $T = 2$.
+\item Transitions: from $s_1$, action $a_L$ leads to $s_2$ with reward $R=0$; action $a_R$ stays in $s_1$ with reward $R=0$.  From $s_2$ (or $s_1$ at $t=1$), a fixed terminal reward of $+1$ is received for $a_R$ and $0$ for $a_L$.
+\item Policy: $\pi_\theta(a_R \mid s_1) = \sigma(\theta_1)$, $\pi_\theta(a_R \mid s_2) = \sigma(\theta_2)$, where $\sigma$ is the sigmoid function.
+\end{itemize}
+
+Set $\gamma = 1$, $\alpha = 0.1$, and initialise $\theta_1 = \theta_2 = 0$ (uniform policy, each action probability $0.5$).
+
+\medskip
+\noindent\textbf{Episode:}  Suppose the sampled trajectory is $(s_1, a_L, 0, s_2, a_R, 1)$.
+
+\medskip
+Compute the reward-to-go:
+\[
+G_0 = 0 + 1 = 1, \qquad G_1 = 1.
+\]
+
+Score function gradients (with $\theta_1 = \theta_2 = 0$, so $\pi = 0.5$ for both actions):
+\[
+\nabla_{\theta_1} \log \pi_\theta(a_L \mid s_1)
+= \frac{\partial}{\partial \theta_1} \log(1 - \sigma(\theta_1))
+= -\sigma(\theta_1) = -0.5,
+\]
+\[
+\nabla_{\theta_2} \log \pi_\theta(a_R \mid s_2)
+= \sigma(\theta_2)(1 - \sigma(\theta_2)) \cdot \frac{1}{\sigma(\theta_2)} = 1 - 0.5 = 0.5.
+\]
+
+Gradient updates ($\gamma = 1$):
+\[
+\Delta \theta_1 = \alpha \cdot \gamma^0 \cdot G_0 \cdot (-0.5) = 0.1 \cdot 1 \cdot 1 \cdot (-0.5) = -0.05,
+\]
+\[
+\Delta \theta_2 = \alpha \cdot \gamma^1 \cdot G_1 \cdot 0.5 = 0.1 \cdot 1 \cdot 1 \cdot 0.5 = +0.05.
+\]
+
+After the update: $\theta_1 = -0.05$ (making $a_L$ slightly less likely from $s_1$) and $\theta_2 = +0.05$ (making $a_R$ more likely from $s_2$).  Intuitively the algorithm is correct: the trajectory that yielded positive return pushes the policy toward actions that generated it.
+\end{example}
+
+\begin{remark}
+REINFORCE converges to a local maximum of $J(\theta)$ under standard stochastic-approximation conditions (diminishing step sizes, $\sum \alpha_t = \infty$, $\sum \alpha_t^2 < \infty$).  However, its variance can be very large, because $G_t$ can vary enormously across episodes.  The next two sections address variance reduction.
+\end{remark}
+
+% ===========================================================
+\section{Variance Reduction: Baselines}
+\label{sec:baselines}
+
+\index{baseline}
+
+\subsection{The Baseline Theorem}
+
+A \textbf{baseline} $b(s)$ is any function of the state (but not of the action) that is subtracted from the return in the policy gradient estimator.  The key result is that doing so does not introduce bias.
+
+\begin{theorem}[Baseline theorem]
+\label{thm:baseline}
+\index{baseline theorem}
+For any function $b : \cS \to \R$,
+\begin{equation}
+\label{eq:baseline-theorem}
+\nabla_\theta J(\theta)
+= \E_{\tau \sim p_\theta}\!\left[\sum_{t=0}^{T-1} \gamma^t \nabla_\theta \log \pi_\theta(A_t \mid S_t)\, \bigl(G_t - b(S_t)\bigr)\right].
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+It suffices to show that the additional term introduced by $b$ has zero expectation.  For each fixed $t$,
+\begin{align*}
+\E\!\left[\nabla_\theta \log \pi_\theta(A_t \mid S_t)\, b(S_t)\right]
+&= \E\!\left[b(S_t)\, \E\!\left[\nabla_\theta \log \pi_\theta(A_t \mid S_t) \mid S_t\right]\right] \\
+&= \E\!\left[b(S_t) \cdot 0\right] = 0,
+\end{align*}
+where the inner expectation vanishes by the score function identity (see the proof of Lemma~\ref{lem:causality}).  Summing over $t$ and applying linearity of expectation gives~\eqref{eq:baseline-theorem}.
+\end{proof}
+
+\subsection{The Optimal Baseline}
+
+Since the baseline does not change the mean of the estimator, we are free to choose it to \emph{minimise variance}.  Consider the variance of a single-step term $g_t(\theta) = \gamma^t \nabla_\theta \log \pi_\theta(A_t \mid S_t)\, (G_t - b)$ (suppressing state dependence for clarity).  The variance of a scalar random variable $X$ satisfies $\Var[X - c] = \Var[X] - 2c\, \Cov[X, 1] + c^2\, \Var[1]$; for a vector $\mathbf{v} = \mathbf{u}\,(G_t - b)$ the analogous computation applied per component gives an optimal baseline for the $k$-th component of the gradient:
+\begin{equation}
+\label{eq:optimal-baseline}
+b^*_k(s) = \frac{\E\!\left[(\nabla_\theta \log \pi_\theta(A_t \mid S_t))^2_k\, G_t \;\middle|\; S_t = s\right]}{\E\!\left[(\nabla_\theta \log \pi_\theta(A_t \mid S_t))^2_k \;\middle|\; S_t = s\right]}.
+\end{equation}
+This is a ratio of expectations and depends on the component index $k$.  The optimal baseline is therefore a vector, and it is generally intractable.  In practice, the state-value function $V^{\pi_\theta}(s)$ is used instead.
+
+\subsection{The State-Value Baseline}
+
+The most natural and widely used baseline is $b(S_t) = V^{\pi_\theta}(S_t)$.  Subtracting the value function from the return yields the \textbf{advantage function}\index{advantage function}:
+\begin{equation}
+\label{eq:advantage}
+A^{\pi_\theta}(s,a) = Q^{\pi_\theta}(s,a) - V^{\pi_\theta}(s).
+\end{equation}
+The policy gradient theorem with the value baseline becomes
+\begin{equation}
+\label{eq:pg-advantage}
+\nabla_\theta J(\theta)
+= \E\!\left[\sum_{t=0}^{T-1} \gamma^t\, \nabla_\theta \log \pi_\theta(A_t \mid S_t)\, A^{\pi_\theta}(S_t, A_t)\right].
+\end{equation}
+Since $\E_\pi[A^{\pi}(s,a) \mid s] = 0$ by definition, the advantage is mean-zero under the policy, which often drastically reduces estimator variance.  In practice $V^{\pi_\theta}$ is unknown and must itself be estimated; the next section addresses this.
+
+\begin{example}[Effect of a baseline on variance]
+\label{ex:baseline-variance}
+Consider a bandit (single-state) environment with two actions.  Action $a_1$ gives reward $10$ always; action $a_2$ gives reward $10.1$ always.  Without a baseline, the gradient signal is proportional to $10$ or $10.1$\,---\,both large and nearly equal.  The estimator struggles to distinguish the slightly better action $a_2$ amid the noise.  With the baseline $b = 10.05$ (the mean reward), the gradient signal is proportional to $-0.05$ or $+0.05$, which is centred at zero and has far lower absolute magnitude, reducing variance substantially.
+\end{example}
+
+% ===========================================================
+\section{REINFORCE with Learned Baseline}
+\label{sec:reinforce-baseline}
+
+\index{REINFORCE!with baseline}
+
+In the previous section, the baseline $b(s) = V^{\pi_\theta}(s)$ was taken as known.  In practice it must be estimated.  The simplest approach is to maintain a separate parameterised value function $\hat V_w(s)$ (the \emph{critic}) alongside the policy (the \emph{actor}), and train both simultaneously.
+
+\begin{algorithm}[ht]
+\caption{REINFORCE with Learned Baseline}
+\label{alg:reinforce-baseline}
+\KwIn{Policy $\pi_\theta$, value function $\hat V_w$, step sizes $\alpha_\theta, \alpha_w$, discount $\gamma$}
+Initialise $\theta, w$ arbitrarily\;
+\For{each episode}{
+  Generate $\tau = (S_0, A_0, R_1, \ldots, S_{T-1}, A_{T-1}, R_T)$ following $\pi_\theta$\;
+  \For{$t = 0, 1, \ldots, T-1$}{
+    $G_t \leftarrow \sum_{k=t}^{T-1} \gamma^{k-t} R_{k+1}$\;
+    $\delta_t \leftarrow G_t - \hat V_w(S_t)$ \tcp*{Advantage estimate}
+    $w \leftarrow w + \alpha_w\, \delta_t\, \nabla_w \hat V_w(S_t)$ \tcp*{Value function update}
+    $\theta \leftarrow \theta + \alpha_\theta\, \gamma^t\, \delta_t\, \nabla_\theta \log \pi_\theta(A_t \mid S_t)$ \tcp*{Policy update}
+  }
+}
+\end{algorithm}
+
+The value function update minimises the mean-squared error $\E[(G_t - \hat V_w(S_t))^2]$, which is a supervised regression problem.  Note that the gradient used for $w$ is $\nabla_w \hat V_w(S_t)$, and the target $G_t$ is a sample (not bootstrapped), so the value update is a standard gradient step\,---\,not a semi-gradient step as in TD(0) (see Chapter~\ref{ch:td}).
+
+\begin{remark}
+Introducing a separate critic opens the door to the full actor-critic family, where the critic uses TD bootstrapping rather than Monte Carlo returns.  This trades the unbiasedness of REINFORCE for reduced variance, at the cost of introducing bias from function approximation.  Actor-critic methods are the subject of Chapter~\ref{ch:actor-critic}.
+\end{remark}
+
+A common concern is whether the learned baseline itself introduces bias.  It does not: the key is that $\hat V_w(S_t)$ depends only on the state $S_t$, not on the action $A_t$ chosen at that step.  Therefore Theorem~\ref{thm:baseline} applies regardless of how $\hat V_w$ was obtained.  The policy gradient estimate $\delta_t\, \nabla_\theta \log \pi_\theta(A_t \mid S_t)$ remains unbiased for $\nabla_\theta J(\theta)$ even when $\hat V_w \neq V^{\pi_\theta}$, though suboptimal $\hat V_w$ will not reduce variance as effectively as the true value function.
+
+% ===========================================================
+\section{RLOO: REINFORCE Leave-One-Out}
+\label{sec:rloo}
+
+\index{RLOO}
+\index{REINFORCE Leave-One-Out|see{RLOO}}
+
+\subsection{Motivation: Policy Gradient in the Language Model Setting}
+
+Modern large-language-model (LLM) alignment pipelines (see Chapter~\ref{ch:practical-rlhf}) fine-tune a language model $\pi_\theta$ using a reward signal $r(\mathbf{y} \mid \mathbf{x})$ that scores a generated completion $\mathbf{y}$ given a prompt $\mathbf{x}$.  In this setting the ``action'' is an entire completion (or, equivalently, a sequence of token-level actions), and the ``state'' is the prompt.  One therefore faces the policy gradient problem with:
+\begin{itemize}[leftmargin=*]
+\item Very high variance per sample (completions can vary enormously).
+\item No access to a separately trained critic (training a value head adds memory and instability).
+\item A natural batch structure: for each prompt $\mathbf{x}$ in a mini-batch, the model generates $K$ independent completions $\mathbf{y}^{(1)}, \ldots, \mathbf{y}^{(K)} \sim \pi_\theta(\cdot \mid \mathbf{x})$.
+\end{itemize}
+The batch structure is the key.  RLOO exploits it to construct a low-variance, unbiased, critic-free baseline.
+
+\subsection{The RLOO Estimator}
+
+\index{RLOO!estimator}
+
+Fix a prompt $\mathbf{x}$ and draw $K$ i.i.d.\ completions $\mathbf{y}^{(1)}, \ldots, \mathbf{y}^{(K)} \sim \pi_\theta(\cdot \mid \mathbf{x})$ with corresponding rewards $r_i = r(\mathbf{y}^{(i)} \mid \mathbf{x})$.  The \textbf{RLOO baseline} for sample $i$ is the average reward of the remaining $K-1$ samples:
+\begin{equation}
+\label{eq:rloo-baseline}
+b_i = \frac{1}{K-1} \sum_{j \neq i} r_j = \frac{1}{K-1}\left(\sum_{j=1}^K r_j - r_i\right).
+\end{equation}
+The \textbf{RLOO policy gradient estimator} is then
+\begin{equation}
+\label{eq:rloo-estimator}
+\hat g_{\text{RLOO}} = \frac{1}{K} \sum_{i=1}^K (r_i - b_i)\, \nabla_\theta \log \pi_\theta(\mathbf{y}^{(i)} \mid \mathbf{x}),
+\end{equation}
+where we write $\nabla_\theta \log \pi_\theta(\mathbf{y}^{(i)} \mid \mathbf{x}) = \sum_{t} \nabla_\theta \log \pi_\theta(y^{(i)}_t \mid \mathbf{x}, y^{(i)}_{<t})$ for the token-sum score.
+
+Substituting~\eqref{eq:rloo-baseline} into~\eqref{eq:rloo-estimator} we can also write
+\begin{equation}
+\label{eq:rloo-expanded}
+\hat g_{\text{RLOO}} = \frac{1}{K} \sum_{i=1}^K \left(r_i - \frac{\bar r - r_i / K}{(K-1)/K}\right) \nabla_\theta \log \pi_\theta(\mathbf{y}^{(i)} \mid \mathbf{x}),
+\end{equation}
+where $\bar r = \frac{1}{K}\sum_j r_j$.  A cleaner expression is
+\begin{equation}
+\label{eq:rloo-clean}
+r_i - b_i = r_i - \frac{\sum_{j \neq i} r_j}{K-1} = \frac{K\, r_i - \sum_{j=1}^K r_j}{K-1} = \frac{K}{K-1}\!\left(r_i - \bar r\right).
+\end{equation}
+Thus the advantage used for sample $i$ is a rescaled deviation of $r_i$ from the batch mean, with a correction factor $K/(K-1)$ that accounts for the leave-one-out structure.
+
+\begin{algorithm}[ht]
+\caption{RLOO Policy Gradient Update}
+\label{alg:rloo}
+\KwIn{Policy $\pi_\theta$, reward function $r$, batch size $K$, step size $\alpha$}
+\For{each prompt $\mathbf{x}$ in the mini-batch}{
+  Sample $K$ completions $\mathbf{y}^{(1)}, \ldots, \mathbf{y}^{(K)} \sim \pi_\theta(\cdot \mid \mathbf{x})$\;
+  Compute rewards $r_i \leftarrow r(\mathbf{y}^{(i)} \mid \mathbf{x})$ for $i = 1, \ldots, K$\;
+  Compute batch mean $\bar r \leftarrow \frac{1}{K}\sum_{i=1}^K r_i$\;
+  \For{$i = 1, \ldots, K$}{
+    $b_i \leftarrow \frac{K}{K-1}(\bar r - r_i/K) \cdot \frac{1}{1} = \frac{1}{K-1}\bigl(\sum_j r_j - r_i\bigr)$ \tcp*{LOO baseline}
+    $\hat A_i \leftarrow r_i - b_i = \frac{K}{K-1}(r_i - \bar r)$\;
+  }
+  $\theta \leftarrow \theta + \alpha \cdot \frac{1}{K}\sum_{i=1}^K \hat A_i\, \nabla_\theta \log \pi_\theta(\mathbf{y}^{(i)} \mid \mathbf{x})$\;
+}
+\end{algorithm}
+
+\subsection{Unbiasedness of RLOO}
+
+\begin{theorem}[RLOO is unbiased]
+\label{thm:rloo-unbiased}
+\index{RLOO!unbiasedness}
+The RLOO estimator $\hat g_{\text{RLOO}}$ defined in~\eqref{eq:rloo-estimator} is an unbiased estimator of $\nabla_\theta J(\theta)$:
+\[
+\E\!\left[\hat g_{\text{RLOO}}\right] = \nabla_\theta J(\theta).
+\]
+\end{theorem}
+
+\begin{proof}
+It suffices to show that $b_i$ satisfies the conditions of the baseline theorem (Theorem~\ref{thm:baseline}), i.e.\ that it is independent of the action $\mathbf{y}^{(i)}$ given the state (prompt $\mathbf{x}$).  The baseline $b_i = \frac{1}{K-1}\sum_{j \neq i} r_j$ is a function of the $K-1$ other completions $\mathbf{y}^{(j)}$, $j \neq i$.  Because all $K$ completions are drawn independently from $\pi_\theta(\cdot \mid \mathbf{x})$, the baseline $b_i$ is independent of $\mathbf{y}^{(i)}$ conditionally on $\mathbf{x}$.
+
+Formally, taking the expectation of the $i$-th term:
+\begin{align*}
+\E\!\left[(r_i - b_i)\, \nabla_\theta \log \pi_\theta(\mathbf{y}^{(i)} \mid \mathbf{x})\right]
+&= \E\!\left[r_i\, \nabla_\theta \log \pi_\theta(\mathbf{y}^{(i)} \mid \mathbf{x})\right]
+ - \E\!\left[b_i\, \nabla_\theta \log \pi_\theta(\mathbf{y}^{(i)} \mid \mathbf{x})\right].
+\end{align*}
+For the second term, condition on all $\mathbf{y}^{(j)}$ with $j \neq i$ (which determines $b_i$):
+\begin{align*}
+\E\!\left[b_i\, \nabla_\theta \log \pi_\theta(\mathbf{y}^{(i)} \mid \mathbf{x})\right]
+&= \E\!\left[b_i\, \E\!\left[\nabla_\theta \log \pi_\theta(\mathbf{y}^{(i)} \mid \mathbf{x}) \;\middle|\; \mathbf{x},\, \{r_j\}_{j \neq i}\right]\right].
+\end{align*}
+The inner expectation is exactly the score function identity applied to the distribution $\pi_\theta(\cdot \mid \mathbf{x})$:
+\[
+\E_{\mathbf{y}^{(i)} \sim \pi_\theta(\cdot \mid \mathbf{x})}\!\left[\nabla_\theta \log \pi_\theta(\mathbf{y}^{(i)} \mid \mathbf{x})\right] = \nabla_\theta \sum_{\mathbf{y}} \pi_\theta(\mathbf{y} \mid \mathbf{x}) = \nabla_\theta 1 = 0.
+\]
+Therefore the subtracted baseline term is zero, and
+\[
+\E\!\left[(r_i - b_i)\, \nabla_\theta \log \pi_\theta(\mathbf{y}^{(i)} \mid \mathbf{x})\right]
+= \E\!\left[r_i\, \nabla_\theta \log \pi_\theta(\mathbf{y}^{(i)} \mid \mathbf{x})\right]
+= \nabla_\theta J(\theta)\big|_{\text{single sample}}.
+\]
+Averaging over $i = 1, \ldots, K$ gives $\hat g_{\text{RLOO}}$ whose expectation equals $\nabla_\theta J(\theta)$.
+\end{proof}
+
+\subsection{Variance Reduction of RLOO}
+
+\index{RLOO!variance}
+
+To understand why RLOO reduces variance relative to plain REINFORCE, compare the two estimators.  Plain REINFORCE uses the full return $r_i$ as the gradient weight (no baseline):
+\[
+\hat g_{\text{RF}} = \frac{1}{K}\sum_{i=1}^K r_i\, \nabla_\theta \log \pi_\theta(\mathbf{y}^{(i)} \mid \mathbf{x}).
+\]
+Let $g_i = \nabla_\theta \log \pi_\theta(\mathbf{y}^{(i)} \mid \mathbf{x})$ and $\mu = \E[r_i]$.  Then $\Var[r_i\, g_i] \approx \Var[r_i] \Var[g_i] + \mu^2 \Var[g_i]$ (ignoring cross-terms), which grows with the magnitude of $\mu$.  RLOO replaces $r_i$ with $r_i - b_i \approx r_i - \mu$ (up to the $K/(K-1)$ correction), whose mean is zero.  The dominant $\mu^2$ term is therefore eliminated, and the variance scales with $\Var[r_i]$ rather than $\E[r_i^2]$.
+
+More precisely, for large $K$ the RLOO baseline $b_i \to \mu = \E_{\pi_\theta}[r]$ (by the law of large numbers), and RLOO approaches the oracle baseline $b = \mu$.  The residual variance of $r_i - b_i$ is $\Var[r_i] / (K-1)$, compared to $\Var[r_i] + \mu^2$ for no baseline.  When rewards have a large positive mean ($\mu \gg 0$), the variance reduction can be dramatic.
+
+\subsection{Connection to RLHF}
+
+\index{RLOO!RLHF connection}
+\index{RLHF!RLOO}
+
+In RLHF pipelines (Chapter~\ref{ch:practical-rlhf}), a reward model $r_\phi(\mathbf{y} \mid \mathbf{x})$ provides scalar feedback on model completions.  RLOO fits naturally: for each prompt $\mathbf{x}$ one samples $K$ completions from the current policy $\pi_\theta$, scores them with the reward model, and computes the RLOO gradient.  No critic network is needed, which saves GPU memory and removes the instability that can arise when a critic is jointly trained with the policy.
+
+RLOO was introduced by Ahmadian~et~al.\ (2024) and shown to outperform PPO-based RLHF baselines with the same number of reward-model queries, largely due to the variance reduction from the leave-one-out baseline and the elimination of the critic.  It can also be combined with a KL-divergence penalty against a reference policy $\pi_{\text{ref}}$, replacing $r_i$ with $r_i - \beta \log(\pi_\theta(\mathbf{y}^{(i)}) / \pi_{\text{ref}}(\mathbf{y}^{(i)}))$, which controls how far the fine-tuned model drifts from the pre-trained model.
+
+\begin{remark}
+\label{rem:rloo-grpo}
+RLOO is closely related to Group Relative Policy Optimisation (GRPO), which also uses a batch of samples per prompt and normalises advantages within the group.  The key difference is that GRPO divides by the within-group standard deviation (standardising the advantage), while RLOO uses the unscaled leave-one-out deviation.  Both belong to a family of ``self-baseline'' estimators that extract a variance-reducing signal from the batch itself, without a separately trained critic.
+\end{remark}
+
+% ===========================================================
+\section{Natural Policy Gradient}
+\label{sec:npg}
+
+\index{natural policy gradient}
+
+\subsection{The Problem with the Ordinary Gradient}
+
+The ordinary gradient $\nabla_\theta J(\theta)$ is defined with respect to the Euclidean metric on parameter space.  A gradient step $\theta \leftarrow \theta + \alpha \nabla_\theta J(\theta)$ moves by a fixed Euclidean distance in $\theta$-space, but the corresponding change in the policy distribution $\pi_\theta$ depends on the local geometry of the policy manifold.  Near a deterministic policy (where some action probability is close to 1), a small step in $\theta$ causes a large change in $\pi_\theta$; near a uniform policy, the same step causes a smaller distributional change.  The ordinary gradient is therefore poorly calibrated: its magnitude reflects Euclidean distance in parameter space, not distributional change.
+
+\subsection{The Fisher Information Matrix}
+
+\index{Fisher information matrix}
+
+The natural policy gradient corrects for this by using the \textbf{Fisher information matrix}\index{Fisher information matrix} of the policy as a Riemannian metric:
+\begin{equation}
+\label{eq:fisher}
+F(\theta) = \E_{S \sim d^{\gamma}_{\pi_\theta},\, A \sim \pi_\theta(\cdot \mid S)}\!\left[\nabla_\theta \log \pi_\theta(A \mid S)\, \nabla_\theta \log \pi_\theta(A \mid S)^\top\right].
+\end{equation}
+This matrix measures the expected outer product of score vectors; it captures how sensitively the distribution $\pi_\theta$ responds to small changes in $\theta$.  Equivalently, $F(\theta)$ is the Hessian of the KL divergence $\KL{\pi_\theta}{\pi_{\theta'}}$ with respect to $\theta'$ evaluated at $\theta' = \theta$.
+
+The \textbf{natural gradient}\index{natural gradient} is the steepest-ascent direction in the space of distributions, measured by the KL divergence:
+\begin{equation}
+\label{eq:natural-gradient}
+\tilde\nabla_\theta J(\theta) = F(\theta)^{-1} \nabla_\theta J(\theta).
+\end{equation}
+The natural policy gradient update is
+\begin{equation}
+\label{eq:npg-update}
+\theta \leftarrow \theta + \alpha\, F(\theta)^{-1} \nabla_\theta J(\theta).
+\end{equation}
+
+\begin{theorem}[Amari, 1998; Kakade, 2002]
+\label{thm:npg}
+The natural gradient $\tilde\nabla_\theta J(\theta) = F(\theta)^{-1} \nabla_\theta J(\theta)$ is the steepest-ascent direction for $J$ subject to the constraint that the KL divergence between old and new policy satisfies $\KL{\pi_\theta}{\pi_{\theta + \Delta\theta}} \leq \epsilon$, for small $\epsilon$.
+\end{theorem}
+
+\begin{proof}[Proof sketch]
+Constrained optimisation of the first-order Taylor expansion $J(\theta + \Delta\theta) \approx J(\theta) + \nabla_\theta J(\theta)^\top \Delta\theta$ subject to $\Delta\theta^\top F(\theta) \Delta\theta \leq \epsilon$ (the KL ball constraint in parameter space) gives, by the Cauchy-Schwarz inequality in the $F$-weighted inner product, the optimal direction $\Delta\theta^* \propto F(\theta)^{-1} \nabla_\theta J(\theta)$.
+\end{proof}
+
+\subsection{Practical Considerations}
+
+Computing $F(\theta)^{-1}$ directly requires $O(d^2)$ memory and $O(d^3)$ time, which is infeasible for large neural networks.  Several approximations are used in practice:
+\begin{itemize}[leftmargin=*]
+\item \textbf{Conjugate gradient.}  Solve $F(\theta)\, \tilde g = \nabla_\theta J(\theta)$ iteratively.  Each step requires a Fisher-vector product, which can be computed in $O(d)$ using back-propagation through the score function.  This is the approach used in TRPO (Schulman~et~al., 2015).
+
+\item \textbf{Kronecker-factored approximation (K-FAC).}  Approximate $F(\theta)$ as a block-diagonal matrix with Kronecker structure, exploiting the layer-wise factorisation of neural networks (Martens \& Grosse, 2015).
+
+\item \textbf{Proximal policy optimisation (PPO).}  Rather than explicitly inverting the Fisher, PPO uses a clipped surrogate objective to implicitly constrain the KL divergence, achieving similar behaviour at much lower cost (Schulman~et~al., 2017).
+\end{itemize}
+The natural policy gradient is conceptually important because it provides the theoretical foundation for trust-region and proximal methods; its practical implementations are the workhorses of modern deep RL and LLM fine-tuning.
+
+% ===========================================================
+\section{Convergence Analysis}
+\label{sec:pg-convergence}
+
+\index{REINFORCE!convergence}
+
+\subsection{Convergence of REINFORCE}
+
+REINFORCE is a stochastic gradient ascent algorithm applied to $J(\theta)$.  Its convergence properties follow from the general theory of stochastic approximation (Robbins \& Monro, 1951), provided the gradient estimator is unbiased (established in Theorem~\ref{thm:rtg-pg}) and the step sizes satisfy the Robbins-Monro conditions:
+\begin{equation}
+\label{eq:rm-conditions}
+\sum_{k=1}^\infty \alpha_k = \infty, \qquad \sum_{k=1}^\infty \alpha_k^2 < \infty.
+\end{equation}
+
+\begin{theorem}[Convergence of REINFORCE]
+\label{thm:reinforce-convergence}
+Assume $\pi_\theta(a \mid s)$ is twice continuously differentiable in $\theta$, and that the gradient $\nabla_\theta \log \pi_\theta$ is bounded.  If the step sizes satisfy~\eqref{eq:rm-conditions} and $J(\theta)$ is bounded above, then the iterates of REINFORCE satisfy
+\[
+\liminf_{k \to \infty} \|\nabla_\theta J(\theta_k)\|^2 = 0 \quad \text{almost surely.}
+\]
+That is, REINFORCE converges to a stationary point of $J$.
+\end{theorem}
+
+The theorem guarantees convergence to a \emph{stationary point}, which may be a local maximum, a saddle point, or (in degenerate cases) a local minimum.  Global optimality is not guaranteed for non-convex $J$.  However, for \emph{tabular} policies (no function approximation, finite state and action spaces), the policy gradient objective has no spurious local maxima under mild conditions (Agarwal~et~al., 2021), so convergence to the global optimum can be guaranteed.
+
+\subsection{Convergence Rate}
+
+For the non-convex setting, the state of the art is a $\tilde O(1/\sqrt{K})$ convergence rate to a stationary point in terms of the number of trajectories $K$:
+
+\begin{theorem}[Convergence rate, informal]
+\label{thm:reinforce-rate}
+Under standard regularity conditions, REINFORCE with a constant step size $\alpha$ finds a point $\theta$ with $\|\nabla_\theta J(\theta)\|^2 \leq \epsilon$ using at most $O(\sigma^2 / (\alpha \epsilon))$ episodes, where $\sigma^2$ is an upper bound on the variance of the gradient estimator.
+\end{theorem}
+
+This rate reveals the central role of variance: reducing $\sigma^2$ (via baselines or RLOO) directly reduces the sample complexity.  With a baseline that reduces variance by a factor of $c$, one needs $c$ times fewer episodes to reach the same accuracy.
+
+\subsection{The Bias-Variance Tradeoff}
+
+All policy gradient estimators involve a bias-variance tradeoff in how they estimate $Q^{\pi_\theta}(s,a)$:
+\begin{itemize}[leftmargin=*]
+\item \textbf{Monte Carlo return $G_t$:} unbiased but high variance (accumulates reward noise over the full episode).
+\item \textbf{TD(0) target $R_{t+1} + \gamma \hat V(S_{t+1})$:} biased (due to the approximation error in $\hat V$) but low variance (only one step of noise).
+\item \textbf{$n$-step return:} interpolates between the two extremes; increasing $n$ reduces bias and increases variance.
+\item \textbf{GAE (Generalised Advantage Estimation, Section~\ref{sec:td0}) with $\lambda \in [0,1]$:} exponentially weighted average of $n$-step returns, combining low bias ($\lambda$ near 1) with low variance ($\lambda$ near 0).
+\end{itemize}
+
+The REINFORCE estimator corresponds to the $n = T$ (full Monte Carlo) extreme.  RLOO keeps the Monte Carlo return but reduces variance through the leave-one-out baseline, while actor-critic methods (Chapter~\ref{ch:actor-critic}) reduce variance through bootstrapping at the cost of some bias.
+
+\begin{remark}
+\label{rem:variance-dominates}
+In practice, variance is typically the dominant problem for policy gradient methods, especially in long-horizon tasks or tasks with large reward scales.  The baseline and reward-to-go reductions together often reduce variance by one to two orders of magnitude compared to the naive estimator~\eqref{eq:basic-pg}, making the difference between convergence and divergence.
+\end{remark}
+
+% ===========================================================
+\section{Comparison of Policy Gradient Estimators}
+\label{sec:pg-comparison}
+
+\index{policy gradient!estimators comparison}
+
+Table~\ref{tab:pg-comparison} summarises the properties of the estimators developed in this chapter.  We use the following notation: $\hat g$ denotes the gradient estimator, $b$ denotes the baseline, and $K$ denotes the number of samples per prompt/state.
+
+\begin{table}[ht]
+\centering
+\caption{Comparison of policy gradient estimators.}
+\label{tab:pg-comparison}
+\small
+\begin{tabular}{@{}llllp{3.2cm}@{}}
+\toprule
+\textbf{Estimator} & \textbf{Baseline} & \textbf{Bias/Var} & \textbf{Critic?} & \textbf{Notes} \\
+\midrule
+REINFORCE & None & Unbias./V.High & No & Simplest; rarely used alone \\
+\addlinespace
+REINFORCE+$b$ & Fixed $b$ & Unbias./High & No & Reduces mean; suboptimal \\
+\addlinespace
+REINFORCE+$\hat V$ & $\hat V_w(s)$ & Unbias./Med & Yes & Most common baseline \\
+\addlinespace
+RLOO & LOO mean & Unbias./Low & No & $K\!\geq\!2$ samples; no critic \\
+\addlinespace
+Actor-Critic & $\hat V_w(s)$ & Biased/Low & Yes & Bootstrap bias \\
+\addlinespace
+Natural PG & None & Unbias./Med & No & Better geometry \\
+\addlinespace
+TRPO/PPO & $\hat V_w(s)$ & Biased/Low & Yes & KL/clip; state of art \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Several observations are worth drawing from Table~\ref{tab:pg-comparison}.
+
+First, all estimators in the ``Bias'' column marked ``Unbiased'' are unbiased as estimators of $\nabla_\theta J(\theta)$: the policy gradient is an exact gradient of the true objective.  Bias enters only when one replaces Monte Carlo returns with bootstrapped targets (as in actor-critic methods), or when value function approximation error propagates into the advantage estimate.
+
+Second, the ``Critic?'' column reveals a fundamental design choice.  Critic-free methods (REINFORCE, RLOO) are simpler but rely on high-variance Monte Carlo returns; critic-based methods (actor-critic, PPO) achieve lower variance at the cost of a separate network, additional hyperparameters (critic learning rate, number of update epochs), and potential instability when the critic is inaccurate.
+
+Third, RLOO achieves the best of both worlds\,---\,no critic, yet substantially lower variance than plain REINFORCE\,---\,by exploiting the natural batch structure of LLM training.  For single-sample settings ($K=1$), RLOO reduces to plain REINFORCE (the LOO baseline is zero with a single sample), so the improvement is contingent on having $K \geq 2$.
+
+Fourth, the natural policy gradient and its practical descendants (TRPO, PPO) are preferable when large parameter updates are needed, since they are invariant to reparametrisation of the policy: the update direction is the same regardless of how $\pi_\theta$ is represented mathematically.
+
+% ===========================================================
+\section*{Exercises}
+\addcontentsline{toc}{section}{Exercises}
+
+\begin{exercise}
+\label{ex:pg-score}
+Let $\pi_\theta(a \mid s) = \mathrm{softmax}(\theta_a)$ be a tabular softmax policy over $n$ actions.
+\begin{enumerate}
+\item Show that $\nabla_{\theta_a} \log \pi_\theta(a' \mid s) = \ind[a = a'] - \pi_\theta(a \mid s)$.
+\item Verify the score function identity: $\sum_{a} \pi_\theta(a \mid s)\, \nabla_\theta \log \pi_\theta(a \mid s) = 0$.
+\item Suppose $n = 3$, $\theta = (1, 0, -1)$, and an action $a = 2$ is observed with return $G = 5$.  Compute the REINFORCE update $\Delta\theta$ with step size $\alpha = 0.01$.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:pg-causality}
+Prove the causality lemma (Lemma~\ref{lem:causality}) directly from the definition of $p_\theta(\tau)$, without using the tower property.  Hint: write out the sum over trajectories explicitly and factor it over time steps.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:pg-baseline-variance}
+Consider a one-state, two-action bandit.  Let $r(a_1) = 1$ and $r(a_2) = 3$ with probability 1.  Let $\pi_\theta(a_1) = \sigma(-\theta)$, $\pi_\theta(a_2) = \sigma(\theta)$.
+\begin{enumerate}
+\item Compute $J(\theta) = \E[r]$ as a function of $\theta$.
+\item Compute $\nabla_\theta J(\theta)$ analytically.
+\item Compute the variance of the REINFORCE gradient estimator (no baseline) as a function of $\theta$.
+\item Show that the baseline $b = \E[r] = J(\theta)$ reduces the variance.  Compute the variance with this baseline.
+\item Which baseline is optimal according to~\eqref{eq:optimal-baseline}?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:rloo-unbiased-direct}
+Prove the unbiasedness of the RLOO estimator directly, without invoking Theorem~\ref{thm:baseline}.  Specifically, for $K = 2$ completions $y^{(1)}, y^{(2)} \sim \pi_\theta(\cdot \mid x)$ with rewards $r_1, r_2$, show that
+\[
+\E\!\left[(r_1 - r_2)\, \nabla_\theta \log \pi_\theta(y^{(1)} \mid x) + (r_2 - r_1)\, \nabla_\theta \log \pi_\theta(y^{(2)} \mid x)\right] = 2\, \nabla_\theta J(\theta).
+\]
+\end{exercise}
+
+\begin{exercise}
+\label{ex:rloo-variance}
+In the notation of Section~\ref{sec:rloo}, let $r_1, \ldots, r_K$ be i.i.d.\ with mean $\mu$ and variance $\sigma^2$, and let $g_1, \ldots, g_K$ be the score functions (independent of the rewards by the score function identity, so treat them as fixed for this exercise).  Show that
+\[
+\Var\!\left[\frac{1}{K}\sum_{i=1}^K (r_i - b_i)\, g_i\right]
+\approx \frac{\sigma^2}{K-1} \cdot \frac{1}{K}\sum_{i=1}^K g_i^2
+\]
+for large $K$, and compare this with the variance of the plain REINFORCE estimator $\frac{1}{K}\sum_i r_i g_i$.  Under what conditions is the variance reduction greatest?
+\end{exercise}
+
+\begin{exercise}
+\label{ex:npg-fisher}
+\begin{enumerate}
+\item Let $\pi_\theta$ be a Gaussian policy: $\pi_\theta(a \mid s) = \cN(a;\, \mu_\theta(s),\, \sigma^2)$ with fixed variance $\sigma^2$.  Compute the Fisher information matrix $F(\theta)$ in terms of $\nabla_\theta \mu_\theta(s)$.
+\item Show that when $\mu_\theta(s) = \theta^\top \phi(s)$ is linear, the natural gradient reduces to $\tilde\nabla_\theta J = \sigma^2\, F_\phi^{-1} \nabla_\theta J$ where $F_\phi$ is the feature covariance matrix.
+\item Explain intuitively why the natural gradient update is invariant to reparametrisation of the policy.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:pg-continuous}
+Consider a continuous-action MDP with $\cA = \R$ and a Gaussian policy $\pi_\theta(a \mid s) = \cN(a;\, \mu_\theta(s),\, e^{2\rho})$, where $\theta = (\theta_\mu, \rho)$ parameterises the mean network and log-standard-deviation.
+\begin{enumerate}
+\item Derive $\nabla_{\theta_\mu} \log \pi_\theta(a \mid s)$ and $\nabla_\rho \log \pi_\theta(a \mid s)$.
+\item Interpret the gradient with respect to $\rho$: when does the update increase entropy, and when does it decrease?
+\item Argue that the REINFORCE update for $\rho$ implements automatic entropy regulation through the reward signal alone.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:pg-convergence}
+\begin{enumerate}
+\item State the Robbins-Monro conditions~\eqref{eq:rm-conditions} and give one example of a step-size sequence that satisfies them and one that does not.
+\item Consider REINFORCE with a constant step size $\alpha > 0$.  Why does this \emph{not} satisfy the Robbins-Monro conditions, and what does the algorithm converge to instead?
+\item Explain the bias-variance tradeoff between REINFORCE (Monte Carlo return) and an actor-critic method (TD target) in the context of Theorem~\ref{thm:reinforce-rate}.  How does reducing variance via a baseline affect the sample complexity bound?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:pg-lm}
+In a language model setting, the policy $\pi_\theta$ generates token sequences autoregressively.  Suppose we use RLOO with $K = 4$ completions per prompt.
+\begin{enumerate}
+\item Write out the RLOO advantage $\hat A_i = r_i - b_i$ for $i = 1, 2, 3, 4$ using the formula in~\eqref{eq:rloo-clean}.
+\item Suppose the four rewards are $r = (0.2, 0.8, 0.5, 0.3)$.  Compute all four advantages.
+\item Show that $\sum_{i=1}^4 \hat A_i = 0$.  Is this always true?  Prove it.
+\item Discuss why the zero-sum property of RLOO advantages (when summed over the batch) can be advantageous or disadvantageous in practice.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:pg-comparison-design}
+You are designing an RL system to fine-tune a pre-trained language model on a text-generation task.  You have access to a black-box reward function and can generate up to $K = 8$ completions per prompt in parallel.
+\begin{enumerate}
+\item Compare REINFORCE with a learned value baseline, RLOO, and PPO on the following dimensions: (a) memory requirements, (b) number of hyperparameters, (c) potential for bias in the gradient estimate, and (d) ease of implementation.
+\item Under what circumstances would you choose RLOO over PPO?  Under what circumstances would you prefer PPO?
+\item Propose a simple experiment to empirically determine the optimal $K$ for RLOO in your setting.
+\end{enumerate}
+\end{exercise}

@@ -1,0 +1,78 @@
+# ==========================
+# LaTeX build artifacts
+# ==========================
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.idx
+*.ilg
+*.ind
+*.log
+*.out
+*.synctex.gz
+*.toc
+*.nav
+*.snm
+*.vrb
+*.dvi
+*.ps
+*.brf
+*.thm
+*.lof
+*.lot
+*.run.xml
+*.bcf
+*-blx.bib
+_minted-*
+*.pyg
+
+# ==========================
+# Python
+# ==========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# ==========================
+# OS files
+# ==========================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+
+# ==========================
+# IDE / Editor
+# ==========================
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.project
+.classpath
+.settings/
+
+# ==========================
+# Compiled PDF (tracked separately via releases)
+# ==========================
+# Uncomment the line below if you don't want to track the PDF in git:
+# book/main.pdf

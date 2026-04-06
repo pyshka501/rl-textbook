@@ -1,0 +1,547 @@
+% ============================================================
+%  APPENDIX A: MATHEMATICAL BACKGROUND
+%  Reference appendix for readers who need foundational review.
+% ============================================================
+
+\chapter{Mathematical Background}
+\label{app:math}
+
+\begin{quote}
+\textit{``The miracle of the appropriateness of the language of mathematics
+for the formulation of the laws of physics is a wonderful gift which we
+neither understand nor deserve.''}
+\par\noindent\hfill---Eugene Wigner, 1960
+\end{quote}
+
+\bigskip
+
+This appendix collects the mathematical background assumed throughout the
+book.  Readers with a solid undergraduate background in calculus, linear
+algebra, and probability can treat it as a reference to consult when a
+term is used without definition.  Readers encountering these ideas for the
+first time will find enough detail to follow the main text, but are
+encouraged to supplement with a dedicated textbook for deeper fluency.
+
+% ============================================================
+\section{Linear Algebra Essentials}
+\label{app:linalg}
+\index{linear algebra}
+% ============================================================
+
+\subsection*{Vectors and Matrices}
+
+A \textbf{vector} $x \in \R^n$ is an ordered list of $n$ real numbers.
+We write column vectors by default; $x^\top$ denotes the row transpose.
+The \textbf{inner product} of $x, y \in \R^n$ is
+\[
+    \langle x, y \rangle = x^\top y = \sum_{i=1}^n x_i y_i.
+\]
+A \textbf{matrix} $A \in \R^{m \times n}$ maps $\R^n \to \R^m$ via
+$y = Ax$.  The \textbf{transpose} $A^\top \in \R^{n \times m}$ satisfies
+$(A^\top)_{ij} = A_{ji}$.
+
+\begin{definition}[Norms]
+\label{def:norms}
+The $\ell^p$ norm of $x \in \R^n$ is
+\[
+    \|x\|_p = \Bigl(\sum_{i=1}^n |x_i|^p\Bigr)^{1/p}, \qquad p \geq 1.
+\]
+Special cases: $\|x\|_1 = \sum_i |x_i|$; $\|x\|_2 = \sqrt{\sum_i x_i^2}$
+(Euclidean norm, written $\|x\|$ when unambiguous);
+$\|x\|_\infty = \max_i |x_i|$.  The \textbf{Frobenius norm} of a matrix is
+$\|A\|_F = \sqrt{\sum_{i,j} A_{ij}^2}$.
+\end{definition}
+
+\subsection*{Eigenvalues and Spectral Properties}
+
+For a square matrix $A \in \R^{n \times n}$, a scalar $\lambda$ and
+non-zero vector $v$ satisfying $Av = \lambda v$ are an
+\textbf{eigenvalue}\index{eigenvalue} and \textbf{eigenvector}.  The
+collection of all eigenvalues is the \textbf{spectrum} of $A$.
+
+\begin{definition}[Spectral Radius]
+\label{def:spectral-radius}
+The spectral radius of $A$ is $\rho(A) = \max_i |\lambda_i|$, where
+$\lambda_1, \ldots, \lambda_n$ are the eigenvalues of $A$.
+\end{definition}
+
+A matrix $A$ is \textbf{positive semi-definite} (PSD) if $x^\top A x \geq 0$
+for all $x$, which is equivalent to all eigenvalues being non-negative.
+PSD matrices arise naturally as covariance matrices and Hessians at local
+minima.
+
+\begin{example}[Covariance matrix]
+Let $X \in \R^{n \times d}$ be a data matrix with zero-mean columns.  The
+empirical covariance $\Sigma = X^\top X / n$ is PSD.  Its eigenvectors are
+the principal components used in PCA, and its eigenvalues measure the
+variance along each component.
+\end{example}
+
+\subsection*{Linear Systems and Invertibility}
+
+A square matrix $A$ is \textbf{invertible} (non-singular) if and only if
+$\det(A) \neq 0$, equivalently if all its eigenvalues are non-zero.  When
+$A$ is invertible the unique solution to $Ax = b$ is $x = A^{-1}b$.
+
+In reinforcement learning, systems of the form $(I - \gamma P^\pi) V = R$
+arise from the Bellman equations (Chapter~\ref{ch:dp}).  Because
+$\rho(\gamma P^\pi) = \gamma < 1$, the matrix $I - \gamma P^\pi$ is
+invertible, guaranteeing a unique value function.
+
+% ============================================================
+\section{Calculus and Optimisation}
+\label{app:calculus}
+\index{calculus}\index{optimisation}
+% ============================================================
+
+\subsection*{Gradients and Hessians}
+
+Let $f : \R^n \to \R$ be differentiable.  The \textbf{gradient}
+\index{gradient} is the vector of partial derivatives:
+\[
+    \nabla_\theta f(\theta)
+    = \Bigl(\frac{\partial f}{\partial \theta_1}, \ldots,
+             \frac{\partial f}{\partial \theta_n}\Bigr)^\top \in \R^n.
+\]
+The gradient points in the direction of steepest ascent.  The
+\textbf{Hessian}\index{Hessian} is the matrix of second derivatives:
+\[
+    H(\theta) = \nabla^2 f(\theta), \qquad
+    H_{ij} = \frac{\partial^2 f}{\partial \theta_i \partial \theta_j}.
+\]
+If $f$ is twice continuously differentiable then $H$ is symmetric.
+
+\begin{definition}[Critical Point]
+$\theta^*$ is a \textbf{critical point} of $f$ if $\nabla f(\theta^*)=0$.
+It is a local minimum if $H(\theta^*)$ is PSD, and a local maximum if
+$-H(\theta^*)$ is PSD.
+\end{definition}
+
+\subsection*{Chain Rule}
+
+If $g: \R^m \to \R^n$ and $f: \R^n \to \R$, the chain rule gives
+\[
+    \nabla_\theta (f \circ g)(\theta)
+    = J_g(\theta)^\top \nabla_{g(\theta)} f,
+\]
+where $J_g \in \R^{n \times m}$ is the Jacobian of $g$.  Automatic
+differentiation in deep learning frameworks computes this efficiently via
+backpropagation.
+
+\subsection*{Gradient Descent}
+
+\textbf{Gradient descent}\index{gradient descent} iterates
+\[
+    \theta_{t+1} = \theta_t - \alpha \nabla f(\theta_t),
+\]
+where $\alpha > 0$ is the \textbf{learning rate}.  The update moves
+$\theta$ in the direction of steepest descent.
+
+\textbf{Stochastic gradient descent} (SGD) replaces the true gradient with
+a noisy estimate $\hat{g}_t$ computed on a mini-batch:
+\[
+    \theta_{t+1} = \theta_t - \alpha \hat{g}_t, \qquad
+    \E[\hat{g}_t] = \nabla f(\theta_t).
+\]
+Variance in $\hat{g}_t$ acts as implicit regularisation and can help escape
+sharp local minima.
+
+\textbf{Adam}\index{Adam optimizer} (Adaptive Moment Estimation) maintains
+exponential moving averages of the gradient $m_t$ and squared gradient
+$v_t$:
+\begin{align*}
+    m_t &= \beta_1 m_{t-1} + (1-\beta_1)\hat{g}_t, \\
+    v_t &= \beta_2 v_{t-1} + (1-\beta_2)\hat{g}_t^2, \\
+    \theta_{t+1} &= \theta_t - \frac{\alpha}{\sqrt{\hat{v}_t}+\epsilon}\,\hat{m}_t,
+\end{align*}
+where $\hat{m}_t = m_t/(1-\beta_1^t)$ and $\hat{v}_t = v_t/(1-\beta_2^t)$
+are bias-corrected estimates.  Default values $\beta_1=0.9$,
+$\beta_2=0.999$, $\epsilon=10^{-8}$ work well across a wide range of
+tasks.
+
+\subsection*{Convexity and Convergence}
+
+\begin{definition}[Convexity]
+\label{def:convexity}
+$f: \R^n \to \R$ is \textbf{convex} if for all $x,y$ and
+$\lambda \in [0,1]$,
+\[
+    f(\lambda x + (1-\lambda)y) \leq \lambda f(x) + (1-\lambda)f(y).
+\]
+It is \textbf{strongly convex} with parameter $\mu > 0$ if
+$f(x) - \frac{\mu}{2}\|x\|^2$ is convex.
+\end{definition}
+
+For a convex function with $L$-Lipschitz gradient (i.e.
+$\|\nabla f(x)-\nabla f(y)\| \leq L\|x-y\|$), gradient descent with
+step size $\alpha \leq 1/L$ converges to the global minimum.  The
+convergence rate is $O(1/t)$ for convex functions and $O(e^{-\mu t/L})$
+for strongly convex functions.
+
+\begin{example}[Quadratic minimisation]
+Let $f(\theta) = \frac{1}{2}\theta^\top A\theta - b^\top\theta$ with $A$
+PSD.  Then $\nabla f(\theta) = A\theta - b$, so gradient descent updates
+$\theta_{t+1} = \theta_t - \alpha(A\theta_t - b)$.  The unique minimum
+is $\theta^* = A^{-1}b$.  With $\alpha < 2/\lambda_{\max}(A)$, the
+iterates converge geometrically.
+\end{example}
+
+% ============================================================
+\section{Probability Theory}
+\label{app:probability}
+\index{probability theory}
+% ============================================================
+
+\subsection*{Random Variables and Distributions}
+
+A \textbf{random variable} $X$ is a measurable function from a sample
+space $\Omega$ to $\R$.  For a discrete $X$, the \textbf{probability mass
+function} (PMF) is $p(x) = \Prob(X=x)$.  For a continuous $X$, the
+\textbf{probability density function} (PDF) $p$ satisfies
+$\Prob(a \leq X \leq b) = \int_a^b p(x)\,dx$.
+
+\begin{definition}[Expectation and Variance]
+\label{def:expectation}
+\[
+    \E[X] = \sum_x x\,p(x) \quad\text{(discrete)}, \qquad
+    \E[X] = \int x\,p(x)\,dx \quad\text{(continuous)}.
+\]
+\[
+    \Var[X] = \E\!\left[(X - \E[X])^2\right] = \E[X^2] - (\E[X])^2.
+\]
+The \textbf{covariance} of $X$ and $Y$ is
+$\Cov[X,Y] = \E[(X-\E X)(Y-\E Y)]$.
+\end{definition}
+
+Expectation is linear: $\E[aX + bY] = a\E[X] + b\E[Y]$ for any constants
+$a, b$ and random variables $X, Y$ (regardless of dependence).  Variance
+is quadratic: $\Var[aX] = a^2 \Var[X]$, and for independent $X, Y$,
+$\Var[X+Y] = \Var[X] + \Var[Y]$.
+
+\subsection*{Conditional Probability and Bayes' Theorem}
+
+The \textbf{conditional probability} of event $A$ given $B$ is
+\[
+    \Prob(A \mid B) = \frac{\Prob(A \cap B)}{\Prob(B)}, \quad \Prob(B) > 0.
+\]
+
+\begin{theorem}[Bayes' Theorem]
+\label{thm:bayes}
+\[
+    \Prob(A \mid B) = \frac{\Prob(B \mid A)\,\Prob(A)}{\Prob(B)}.
+\]
+In the continuous setting with prior $p(\theta)$ and likelihood $p(x|\theta)$:
+\[
+    p(\theta \mid x) = \frac{p(x \mid \theta)\,p(\theta)}{p(x)}.
+\]
+\end{theorem}
+
+Bayes' theorem underpins Bayesian exploration strategies (posterior
+sampling, Chapter~\ref{ch:bandits}) and reward modelling in RLHF
+(Chapter~\ref{ch:practical-rlhf}).
+
+\subsection*{Conditional Expectation and the Tower Property}
+
+The \textbf{conditional expectation} $\E[X \mid Y]$ is itself a random
+variable\,---\,a function of $Y$.  Its value at $Y=y$ is
+$\E[X \mid Y=y] = \int x\,p(x \mid y)\,dx$.
+
+\begin{theorem}[Tower Property / Law of Total Expectation]
+\label{thm:tower}
+\[
+    \E[X] = \E\!\bigl[\E[X \mid Y]\bigr].
+\]
+More generally, for $\sigma$-algebras $\mathcal{F}_1 \subseteq \mathcal{F}_2$,
+$\E[\E[X|\mathcal{F}_2]|\mathcal{F}_1] = \E[X|\mathcal{F}_1]$.
+\end{theorem}
+
+The tower property appears throughout RL whenever we marginalise over
+future trajectories or compute expected returns by conditioning on the
+current state.
+
+\subsection*{Concentration Inequalities}
+
+\begin{theorem}[Law of Large Numbers]
+\label{thm:lln}
+Let $X_1, X_2, \ldots$ be i.i.d.\ with mean $\mu$.  Then, as $n \to \infty$,
+\[
+    \bar{X}_n = \frac{1}{n}\sum_{i=1}^n X_i \xrightarrow{\,\text{a.s.}\,} \mu.
+\]
+\end{theorem}
+
+The LLN justifies using sample averages to estimate expected returns in
+Monte Carlo methods (Chapter~\ref{ch:mc}).
+
+\begin{theorem}[Central Limit Theorem]
+\label{thm:clt}
+Under the same conditions as Theorem~\ref{thm:lln}, with
+$\sigma^2 = \Var[X_i] < \infty$,
+\[
+    \sqrt{n}\,(\bar{X}_n - \mu) \xrightarrow{\,d\,} \cN(0, \sigma^2).
+\]
+\end{theorem}
+
+The CLT gives confidence intervals on Monte Carlo estimates and motivates
+the Gaussian noise model in continuous control.
+
+\begin{example}[Sample return estimate]
+Suppose we run $n$ independent episodes and record returns
+$G^{(1)}, \ldots, G^{(n)}$.  By the LLN, $\bar{G}_n \to V^\pi(s_0)$.
+By the CLT, a 95\% confidence interval is approximately
+$\bar{G}_n \pm 1.96\,\hat{\sigma}/\sqrt{n}$, where $\hat{\sigma}^2$
+is the sample variance of the returns.
+\end{example}
+
+% ============================================================
+\section{Sampling Methods}
+\label{app:sampling}
+\index{sampling methods}
+% ============================================================
+
+Many quantities in RL\,---\,expected returns, policy gradients, KL
+penalties\,---\,cannot be computed in closed form but can be \emph{estimated}
+from samples.  This section reviews the core sampling strategies.
+
+\subsection*{Monte Carlo Estimation}
+
+Given an expectation $\mu = \E_{X \sim p}[f(X)]$ that is hard to compute
+analytically, the \textbf{Monte Carlo estimate}\index{Monte Carlo} is
+\[
+    \hat{\mu}_n = \frac{1}{n}\sum_{i=1}^n f(x^{(i)}), \qquad
+    x^{(i)} \sim p.
+\]
+By the LLN, $\hat{\mu}_n \to \mu$.  The variance of the estimator is
+$\Var[\hat{\mu}_n] = \Var[f(X)] / n$, so doubling the number of samples
+halves the standard error.
+
+Monte Carlo methods in RL (Chapter~\ref{ch:mc}) use full episode returns
+as unbiased (though high-variance) estimates of the value function.
+
+\subsection*{Importance Sampling}
+
+When samples from $p$ are unavailable but samples from a different
+\textbf{proposal distribution} $q$ are, \textbf{importance sampling}
+\index{importance sampling} corrects via the likelihood ratio:
+\[
+    \mu = \E_{X \sim p}[f(X)]
+        = \E_{X \sim q}\!\left[\frac{p(X)}{q(X)}\,f(X)\right].
+\]
+The ratio $w(x) = p(x)/q(x)$ is the \textbf{importance weight}.  The
+estimator is unbiased when $q(x) > 0$ wherever $p(x)f(x) \neq 0$, but
+can have high (even infinite) variance if $p$ and $q$ differ greatly.
+
+Importance sampling appears in off-policy TD learning and is central to
+the PPO objective (Chapter~\ref{ch:actor-critic}), where
+$q = \pi_{\theta_{\text{old}}}$ and $p = \pi_\theta$.  Clipping the ratio
+$\rho_t = \pi_\theta / \pi_{\theta_{\text{old}}}$ controls variance.
+
+\subsection*{Rejection Sampling}
+
+\textbf{Rejection sampling}\index{rejection sampling} draws from a target
+distribution $p(x) \propto \tilde{p}(x)$ using a proposal $q(x)$ such
+that $\tilde{p}(x) \leq M q(x)$ for all $x$:
+
+\begin{enumerate}[leftmargin=*]
+    \item Sample $x \sim q$.
+    \item Accept $x$ with probability $\tilde{p}(x)/(M q(x))$; else reject.
+\end{enumerate}
+
+The acceptance probability is $1/M$, so a tight proposal (small $M$) is
+crucial for efficiency.  Rejection sampling is used in the analysis of
+offline preference models (Chapter~\ref{ch:practical-rlhf}) and in
+certain structured decoding schemes.
+
+% ============================================================
+\section{Information Theory}
+\label{app:info-theory}
+\index{information theory}
+% ============================================================
+
+Information theory quantifies uncertainty and the cost of communication.
+In RL, its concepts appear in reward regularisation, policy optimisation
+objectives, and the analysis of exploration.
+
+\begin{definition}[Entropy]
+\label{def:entropy}
+The \textbf{Shannon entropy}\index{entropy} of a discrete distribution $p$
+over alphabet $\cV$ is
+\[
+    H(p) = -\sum_{x \in \cV} p(x)\log p(x),
+\]
+measured in nats (base $e$) or bits (base 2).  Entropy is maximised by
+the uniform distribution and equals zero for a point mass.
+\end{definition}
+
+Entropy bonuses $\mathcal{H}(\pi(\cdot|s))$ encourage exploration by
+penalising policies that collapse to deterministic actions
+(Chapter~\ref{ch:actor-critic}).
+
+\begin{definition}[Cross-Entropy]
+\label{def:cross-entropy}
+The \textbf{cross-entropy} between distributions $p$ and $q$ is
+\[
+    H(p,q) = -\sum_x p(x)\log q(x).
+\]
+It equals $H(p) + \KL{p}{q}$ and is the standard training objective for
+language model pre-training and supervised fine-tuning.
+\end{definition}
+
+\begin{definition}[KL Divergence]
+\label{def:kl}
+The \textbf{Kullback-Leibler divergence}\index{KL divergence} from $q$ to
+$p$ is
+\[
+    \KL{p}{q} = \sum_x p(x)\log\frac{p(x)}{q(x)} \geq 0,
+\]
+with equality if and only if $p = q$ almost everywhere.  Note that
+$\KL{p}{q} \neq \KL{q}{p}$ in general; the KL is not a metric.
+\end{definition}
+
+The KL penalty $\beta\,\KL{\pi_\theta}{\pi_\mathrm{ref}}$ in RLHF
+objectives (Chapter~\ref{ch:practical-rlhf}) and DPO
+(Chapter~\ref{ch:lm-post-training}) penalises excessive deviation from the
+reference policy, preventing reward hacking.
+
+\begin{definition}[Mutual Information]
+\label{def:mutual-info}
+The \textbf{mutual information} between random variables $X$ and $Y$ is
+\[
+    I(X;Y) = \KL{p(x,y)}{p(x)p(y)}
+            = H(X) - H(X \mid Y) \geq 0.
+\]
+It measures the reduction in uncertainty about $X$ after observing $Y$.
+\end{definition}
+
+\begin{example}[KL regularised RL]
+The optimal policy for the KL-regularised objective
+$\max_\pi \E_\pi[R] - \beta\,\KL{\pi}{\pi_\mathrm{ref}}$
+has a closed form: $\pi^*(a|s) \propto \pi_\mathrm{ref}(a|s)\,
+e^{Q^*(s,a)/\beta}$, where $Q^*$ is the soft Q-function.  This
+connects to the DPO derivation in Chapter~\ref{ch:dpo}.
+\end{example}
+
+% ============================================================
+\section{Operators and Contraction Mappings}
+\label{app:operators}
+\index{contraction mapping}\index{Bellman operator}
+% ============================================================
+
+The convergence proofs for dynamic programming and TD learning rely on a
+classical result from functional analysis\,---\,the Banach fixed-point
+theorem.  This section develops the necessary background and shows how the
+Bellman operator fits the framework.
+
+\subsection*{Metric Spaces and Contractions}
+
+\begin{definition}[Metric Space]
+\label{def:metric-space}
+A \textbf{metric space} $(X, d)$ is a set $X$ equipped with a distance
+function $d: X \times X \to [0,\infty)$ satisfying: (i) $d(x,y)=0
+\Leftrightarrow x=y$; (ii) $d(x,y)=d(y,x)$; (iii) $d(x,z) \leq
+d(x,y)+d(y,z)$ (triangle inequality).  A metric space is
+\textbf{complete} if every Cauchy sequence converges in $X$.
+\end{definition}
+
+\begin{definition}[Contraction Mapping]
+\label{def:contraction}
+An operator $T: X \to X$ on a metric space $(X,d)$ is a
+\textbf{contraction}\index{contraction} with modulus $\kappa \in [0,1)$
+if
+\[
+    d(Tx, Ty) \leq \kappa\, d(x, y) \quad \text{for all } x, y \in X.
+\]
+\end{definition}
+
+\begin{theorem}[Banach Fixed-Point Theorem]
+\label{thm:banach}
+If $T$ is a contraction on a complete metric space $(X,d)$, then $T$ has
+a \emph{unique} fixed point $x^*$ (i.e.\ $Tx^* = x^*$), and for any
+starting point $x_0 \in X$ the iterates $x_{k+1} = T x_k$ converge:
+\[
+    d(x_k, x^*) \leq \frac{\kappa^k}{1-\kappa}\,d(x_1, x_0).
+\]
+Convergence is geometric with rate $\kappa$.
+\end{theorem}
+
+\subsection*{The Bellman Operator as a Contraction}
+
+Let $\mathcal{B}(\cS)$ denote the space of bounded real-valued functions
+on $\cS$, equipped with the sup-norm $\|V\|_\infty = \max_s |V(s)|$.
+This is a complete metric space.
+
+\begin{definition}[Bellman Operators]
+\label{def:bellman-op}
+For a fixed policy $\pi$, the \textbf{Bellman evaluation operator}
+$\mathcal{T}^\pi$ maps $V : \cS \to \R$ to
+\[
+    (\mathcal{T}^\pi V)(s)
+    = \sum_a \pi(a|s)\Bigl[R(s,a) + \gamma \sum_{s'} P(s'|s,a)\,V(s')\Bigr].
+\]
+The \textbf{Bellman optimality operator} $\mathcal{T}^*$ maps $V$ to
+\[
+    (\mathcal{T}^* V)(s)
+    = \max_a \Bigl[R(s,a) + \gamma \sum_{s'} P(s'|s,a)\,V(s')\Bigr].
+\]
+\end{definition}
+
+\begin{theorem}[Bellman Contraction]
+\label{thm:bellman-contraction}
+Both $\mathcal{T}^\pi$ and $\mathcal{T}^*$ are contractions on
+$(\mathcal{B}(\cS), \|\cdot\|_\infty)$ with modulus $\gamma$.
+\end{theorem}
+
+\begin{proof}
+We prove the result for $\mathcal{T}^*$; the proof for $\mathcal{T}^\pi$
+is analogous.  For any $V, W \in \mathcal{B}(\cS)$ and any state $s$,
+\begin{align*}
+|(\mathcal{T}^* V)(s) - (\mathcal{T}^* W)(s)|
+&= \Bigl|\max_a [R(s,a) + \gamma(PV)(s,a)]
+   - \max_a [R(s,a) + \gamma(PW)(s,a)]\Bigr| \\
+&\leq \max_a \gamma\,\Bigl|\sum_{s'} P(s'|s,a)[V(s')-W(s')]\Bigr| \\
+&\leq \gamma\,\|V - W\|_\infty,
+\end{align*}
+where we used $|\max_a f(a) - \max_a g(a)| \leq \max_a |f(a)-g(a)|$
+and the fact that $P(\cdot|s,a)$ is a probability distribution.  Taking
+the supremum over $s$ gives
+$\|\mathcal{T}^* V - \mathcal{T}^* W\|_\infty \leq \gamma\,\|V-W\|_\infty$.
+Since $\gamma < 1$, $\mathcal{T}^*$ is a contraction.
+\end{proof}
+
+\begin{corollary}[Existence and Uniqueness of Value Functions]
+\label{cor:value-exists}
+For any MDP with $\gamma < 1$ (or finite horizon), the value functions
+$V^\pi$ and $V^*$ exist and are unique fixed points of $\mathcal{T}^\pi$
+and $\mathcal{T}^*$ respectively.  Starting from any bounded $V_0$,
+the iterates $V_{k+1} = \mathcal{T}^\pi V_k$ (policy evaluation) and
+$V_{k+1} = \mathcal{T}^* V_k$ (value iteration) converge geometrically:
+\[
+    \|V_k - V^\pi\|_\infty \leq \gamma^k\,\|V_0 - V^\pi\|_\infty.
+\]
+\end{corollary}
+
+This result justifies the algorithms developed in Chapters~\ref{ch:dp}
+and~\ref{ch:td}: each step of policy evaluation or value iteration reduces
+the approximation error by a factor of $\gamma$.
+
+\begin{example}[Value iteration on a two-state MDP]
+Consider a two-state MDP with $\cS = \{s_1, s_2\}$, $\gamma = 0.9$, and
+the optimal value $V^* = (10, 5)^\top$.  Starting from $V_0 = (0,0)^\top$,
+after $k$ iterations the error satisfies
+$\|V_k - V^*\|_\infty \leq 0.9^k \cdot 10$.  To reach error $\leq 0.01$
+we need $k \geq \log(0.001)/\log(0.9) \approx 66$ iterations\,---\,a
+precise convergence guarantee independent of the reward structure.
+\end{example}
+
+\subsection*{Non-Expansive Operators and Approximate DP}
+
+When function approximation is used (Chapter~\ref{ch:value-approx}), the
+projected Bellman operator $\Pi \mathcal{T}^\pi$ (where $\Pi$ is an
+orthogonal projection onto the approximation space) is no longer a
+contraction in general.  The TD fixed-point theorem provides a weaker but
+still useful guarantee: under linear function approximation and certain
+on-policy sampling conditions, TD converges to a fixed point whose error
+is bounded by a multiple of the best achievable approximation error.
+
+% ============================================================
+%  End of Appendix A
+% ============================================================

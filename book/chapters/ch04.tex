@@ -1,0 +1,579 @@
+\chapter{Dynamic Programming}
+\label{ch:dp}
+
+\begin{quote}
+\itshape
+Give me a place to stand on, and I will move the Earth.
+\upshape --- Archimedes
+\end{quote}
+
+\bigskip
+
+Dynamic programming\index{dynamic programming} (DP) occupies a unique position in reinforcement learning: it solves the central problem of sequential decision-making \emph{exactly}, but only when the agent possesses a perfect mathematical model of the environment.  In this chapter we treat DP both as a collection of practical algorithms and as the theoretical bedrock upon which the rest of this book rests.  Every algorithm we encounter in subsequent chapters\,---\,Monte Carlo methods, temporal-difference learning, policy gradient\,---\,can be understood as an approximation to DP that replaces exact model-based computation with sampling or function approximation.
+
+Formally, we assume throughout this chapter that the environment is a finite\index{finite MDP} Markov decision process $({\cS}, {\cA}, p, \gamma)$ as defined in Chapter~\ref{ch:mdp}.  The transition kernel $p(s', r \mid s, a)$ is known in full, the state and action spaces are finite, and the discount factor satisfies $\gamma \in [0,1)$.  Under these conditions DP finds the optimal value function and an optimal policy in time polynomial in $|\cS|$ and $|\cA|$.
+
+The fundamental insight underlying all DP algorithms is the \emph{Bellman equation}\index{Bellman equation}: optimal value functions satisfy a recursive consistency condition, and DP exploits this structure by iterating a carefully defined operator until convergence.  We present four main algorithms\,---\,iterative policy evaluation, policy improvement, policy iteration, and value iteration\,---\,and unify them under the banner of \emph{Generalized Policy Iteration} (GPI)\index{Generalized Policy Iteration}.
+
+% ===========================================================
+\section{Policy Evaluation (Prediction)}
+\label{sec:policy-evaluation}
+\index{policy evaluation}
+
+The first and most basic task is \emph{policy evaluation}\index{policy evaluation}: given a fixed policy $\pi$, compute its state-value function $v^\pi$.  This is a prediction problem\,---\,we are not yet trying to find a \emph{good} policy, only to understand how well the given one performs.
+
+\subsection*{The Bellman Operator for a Fixed Policy}
+
+Recall from Chapter~\ref{ch:mdp} that $v^\pi$ is the unique solution to the \emph{Bellman expectation equations}\index{Bellman expectation equation}
+\begin{equation}
+\label{eq:bellman-expectation}
+v^\pi(s) = \sum_{a \in \cA} \pi(a \mid s) \sum_{s' \in \cS} \sum_{r} p(s', r \mid s, a)\bigl[r + \gamma\, v^\pi(s')\bigr], \qquad s \in \cS.
+\end{equation}
+This is a linear system of $|\cS|$ equations in $|\cS|$ unknowns.  In principle one could solve it directly by Gaussian elimination, but for the large state spaces common in RL that is computationally prohibitive.  Instead, DP solves~\eqref{eq:bellman-expectation} by \emph{successive approximation}: define the \textbf{Bellman policy operator}\index{Bellman operator}
+\begin{equation}
+\label{eq:bellman-operator}
+(T^\pi v)(s) = \sum_{a \in \cA} \pi(a \mid s) \sum_{s' \in \cS} \sum_{r} p(s', r \mid s, a)\bigl[r + \gamma\, v(s')\bigr],
+\end{equation}
+and iterate $v_{k+1} = T^\pi v_k$ starting from any bounded initialisation $v_0$.
+
+\begin{theorem}[Contraction of $T^\pi$]
+\label{thm:contraction}
+\index{contraction mapping}
+The operator $T^\pi$ is a contraction\index{Banach fixed-point theorem} on the space of bounded functions $\cS \to \R$ equipped with the sup-norm $\|v\|_\infty = \max_{s \in \cS}|v(s)|$.  Specifically, for any two bounded functions $u, v \colon \cS \to \R$,
+\[
+\|T^\pi u - T^\pi v\|_\infty \le \gamma \|u - v\|_\infty.
+\]
+Consequently, $T^\pi$ has a unique fixed point $v^\pi$, and the iterates $v_{k+1} = T^\pi v_k$ converge to $v^\pi$ from any starting point $v_0$.
+\end{theorem}
+
+\begin{proof}
+Fix any state $s \in \cS$.  Then
+\begin{align*}
+\bigl|(T^\pi u)(s) - (T^\pi v)(s)\bigr|
+&= \Bigl|\sum_a \pi(a \mid s) \sum_{s',r} p(s',r \mid s,a)\,\gamma\bigl[u(s') - v(s')\bigr]\Bigr| \\
+&\le \sum_a \pi(a \mid s) \sum_{s',r} p(s',r \mid s,a)\,\gamma\,\|u - v\|_\infty \\
+&= \gamma \|u - v\|_\infty,
+\end{align*}
+where the inequality uses the triangle inequality and the fact that the weights $\pi(a \mid s)\,p(s',r \mid s,a)$ are non-negative and sum to one.  Taking the supremum over $s$ gives $\|T^\pi u - T^\pi v\|_\infty \le \gamma\|u-v\|_\infty$.  Since $\gamma < 1$, the operator is a strict contraction.  By the Banach fixed-point theorem it has a unique fixed point, and the iterates converge at a geometric rate with ratio $\gamma$.
+\end{proof}
+
+\begin{remark}
+The error after $k$ iterations satisfies $\|v_k - v^\pi\|_\infty \le \gamma^k \|v_0 - v^\pi\|_\infty$.  For $\gamma = 0.9$ and a desired accuracy of $\varepsilon = 10^{-3}$, one needs roughly $k \ge \log(10^{-3}/\|v_0 - v^\pi\|_\infty)/\log(0.9)$ iterations\,---\,independent of $|\cS|$.
+\end{remark}
+
+\subsection*{Algorithm and Stopping Criterion}
+
+In practice, one sweeps through all states and applies the update simultaneously (synchronous DP\index{synchronous DP}) or in sequence (see Section~\ref{sec:async-dp}).  The algorithm halts when the maximum change across all states falls below a threshold $\theta$.
+
+\begin{algorithm}[ht]
+\caption{Iterative Policy Evaluation}
+\label{alg:policy-eval}
+\KwIn{Policy $\pi$, MDP dynamics $p$, discount $\gamma$, threshold $\theta > 0$}
+Initialise $V(s) \leftarrow 0$ for all $s \in \cS$; set $V(\text{terminal}) \leftarrow 0$\;
+\Repeat{$\Delta < \theta$}{
+  $\Delta \leftarrow 0$\;
+  \For{each $s \in \cS$}{
+    $v \leftarrow V(s)$\;
+    $V(s) \leftarrow \displaystyle\sum_a \pi(a \mid s) \sum_{s',r} p(s',r \mid s,a)\bigl[r + \gamma\, V(s')\bigr]$\;
+    $\Delta \leftarrow \max(\Delta,\; |v - V(s)|)$\;
+  }
+}
+\KwOut{$V \approx v^\pi$}
+\end{algorithm}
+
+\paragraph{Stopping criterion.}\index{stopping criterion}
+The threshold $\theta$ controls the trade-off between accuracy and computation.  A common practical choice is $\theta = 10^{-4}$ or $\theta = 10^{-6}$.  The \emph{a~posteriori} error bound is
+\[
+\|V - v^\pi\|_\infty \le \frac{\theta\,\gamma}{1-\gamma},
+\]
+which follows from the geometric series argument applied to the contraction.
+
+\subsection*{Worked Example: Gridworld}
+
+\begin{example}[4$\times$4 Gridworld]
+\label{ex:gridworld-eval}
+\index{gridworld}
+Consider the standard $4\times4$ gridworld with 16 states arranged in a grid.  States $s_1$ (top-left) and $s_{16}$ (bottom-right) are terminal.  From each non-terminal state the agent may move \textsc{up}, \textsc{down}, \textsc{left}, or \textsc{right}; attempted moves off the grid leave the state unchanged.  Each transition yields reward $-1$ (the agent wants to reach a terminal state as quickly as possible).  We evaluate the \emph{equiprobable random policy} $\pi(a \mid s) = 0.25$ for all $a$ and $\gamma = 1$ (undiscounted episodic task).
+
+\medskip
+\noindent
+The following table shows $V$ after several sweeps.
+
+\begin{center}
+\begin{tabular}{ccccc}
+\toprule
+Iteration & \multicolumn{4}{c}{$V$ values (row by row, terminal states shown as $0$)} \\
+\midrule
+$k=0$ & $0$ & $0$ & $0$ & $0$ \\
+      & $0$ & $0$ & $0$ & $0$ \\
+      & $0$ & $0$ & $0$ & $0$ \\
+      & $0$ & $0$ & $0$ & $0$ \\
+\midrule
+$k=1$ & $0$ & $-1$ & $-1$ & $-1$ \\
+      & $-1$ & $-1$ & $-1$ & $-1$ \\
+      & $-1$ & $-1$ & $-1$ & $-1$ \\
+      & $-1$ & $-1$ & $-1$ & $0$ \\
+\midrule
+$k=2$ & $0$ & $-1.75$ & $-2$ & $-2$ \\
+      & $-1.75$ & $-2$ & $-2$ & $-2$ \\
+      & $-2$ & $-2$ & $-2$ & $-1.75$ \\
+      & $-2$ & $-2$ & $-1.75$ & $0$ \\
+\midrule
+$k \to \infty$ & $0$ & $-14$ & $-20$ & $-22$ \\
+               & $-14$ & $-18$ & $-20$ & $-20$ \\
+               & $-20$ & $-20$ & $-18$ & $-14$ \\
+               & $-22$ & $-20$ & $-14$ & $0$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\medskip
+\noindent
+The converged values reflect the expected number of steps to reach a terminal state under the random policy.  A state like the one diagonally opposite both terminals ($-22$) is hardest to escape; states adjacent to terminals have $v^\pi \approx -14$.  This example illustrates how policy evaluation propagates information \emph{backwards} from terminal states through the grid.
+\end{example}
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[>=Stealth, node distance=0.9cm,
+  cell/.style={draw, minimum size=0.85cm, font=\scriptsize},
+  tcell/.style={draw, minimum size=0.85cm, font=\scriptsize, fill=gray!30}]
+% Draw a 4x4 grid with converged values
+\foreach \row/\vals in {
+  0/{0, -14, -20, -22},
+  1/{-14, -18, -20, -20},
+  2/{-20, -20, -18, -14},
+  3/{-22, -20, -14, 0}}{
+  \foreach \col/\val [count=\ci from 0] in \vals {
+    \pgfmathsetmacro{\isterm}{(\row==0 && \ci==0) || (\row==3 && \ci==3) ? 1 : 0}
+    \ifnum\ci=0
+      \def\vval{\row}% dummy trick to get the value
+    \fi
+  }
+}
+% Manual grid for clarity
+\foreach \r in {0,1,2,3}{
+  \foreach \c in {0,1,2,3}{
+    \pgfmathtruncatemacro{\istop}{(\r==0 && \c==0) || (\r==3 && \c==3)}
+    \ifnum\istop=1
+      \node[tcell] at (\c*0.95, -\r*0.95) {$0$};
+    \else
+      % compute value
+      \pgfmathtruncatemacro{\idx}{\r*4+\c}
+      \pgfmathsetmacro{\vval}{
+        \idx==1 ? -14 : (\idx==2 ? -20 : (\idx==3 ? -22 :
+        (\idx==4 ? -14 : (\idx==5 ? -18 : (\idx==6 ? -20 :
+        (\idx==7 ? -20 : (\idx==8 ? -20 : (\idx==9 ? -20 :
+        (\idx==10 ? -18 : (\idx==11 ? -14 : (\idx==12 ? -22 :
+        (\idx==13 ? -20 : (\idx==14 ? -14 : 0))))))))))))))}
+      \node[cell] at (\c*0.95, -\r*0.95) {\pgfmathprintnumber[fixed,precision=0]{\vval}};
+    \fi
+  }
+}
+\node[above] at (1.425, 0.55) {\small Converged $v^\pi$ (random policy, $\gamma=1$)};
+\end{tikzpicture}
+\caption{State-value function $v^\pi$ for the equiprobable random policy on the $4\times 4$ gridworld after convergence of iterative policy evaluation.  Shaded cells are terminal states with value $0$.  Values represent the expected cumulative (undiscounted) reward, i.e.\ the negative of the expected number of steps to reach a terminal.}
+\label{fig:gridworld-values}
+\end{figure}
+
+% ===========================================================
+\section{Policy Improvement}
+\label{sec:policy-improvement}
+\index{policy improvement}
+
+Once we have computed $v^\pi$ for some policy $\pi$, a natural question is: can we construct a strictly better policy?  The \emph{policy improvement theorem}\index{policy improvement theorem} answers this definitively.
+
+\subsection*{The Action-Value Function}
+
+Given $v^\pi$, the \emph{action-value function}\index{action-value function} $q^\pi(s,a)$ captures the value of taking action $a$ in state $s$ and then following $\pi$:
+\begin{equation}
+\label{eq:q-from-v}
+q^\pi(s,a) = \sum_{s' \in \cS}\sum_r p(s',r \mid s,a)\bigl[r + \gamma\,v^\pi(s')\bigr].
+\end{equation}
+In the model-based setting, $q^\pi$ can be computed directly from $v^\pi$ using the one-step lookahead in~\eqref{eq:q-from-v}.  The key observation is that $q^\pi(s, a) \ge v^\pi(s)$ means that taking action $a$ \emph{once} in state $s$ and then reverting to $\pi$ is at least as good as following $\pi$ from the outset.
+
+\begin{theorem}[Policy Improvement Theorem]
+\label{thm:policy-improvement}
+\index{policy improvement theorem}
+Let $\pi$ and $\pi'$ be two deterministic policies such that for all $s \in \cS$,
+\begin{equation}
+\label{eq:improvement-condition}
+q^\pi\bigl(s, \pi'(s)\bigr) \ge v^\pi(s).
+\end{equation}
+Then $\pi'$ is at least as good as $\pi$:
+\[
+v^{\pi'}(s) \ge v^\pi(s), \qquad \forall s \in \cS.
+\]
+Moreover, if the inequality in~\eqref{eq:improvement-condition} is strict for at least one state, then $v^{\pi'}(s) > v^\pi(s)$ for at least one state.
+\end{theorem}
+
+\begin{proof}
+From~\eqref{eq:improvement-condition} and the definition of $q^\pi$:
+\[
+v^\pi(s) \le q^\pi\bigl(s, \pi'(s)\bigr)
+= \sum_{s',r} p(s',r \mid s, \pi'(s))\bigl[r + \gamma\,v^\pi(s')\bigr]
+= (T^{\pi'} v^\pi)(s).
+\]
+Hence $v^\pi \le T^{\pi'} v^\pi$ pointwise.  The operator $T^{\pi'}$ is \emph{monotone}: if $u \le v$ pointwise then $(T^{\pi'} u)(s) \le (T^{\pi'} v)(s)$ for all $s$, as the weights $p(s',r \mid s, \pi'(s))$ are non-negative.  Applying $T^{\pi'}$ repeatedly and using monotonicity,
+\[
+v^\pi \le T^{\pi'} v^\pi \le (T^{\pi'})^2 v^\pi \le \cdots \le (T^{\pi'})^n v^\pi \qquad \forall n \ge 1.
+\]
+By Theorem~\ref{thm:contraction} (with $\pi'$ in place of $\pi$), $(T^{\pi'})^n v^\pi \to v^{\pi'}$ as $n \to \infty$.  Since the inequality holds for every finite $n$, it is preserved in the limit:
+\[
+v^\pi(s) \le v^{\pi'}(s), \qquad \forall s \in \cS. \qedhere
+\]
+\end{proof}
+
+\subsection*{Greedy Policy Construction}
+
+The \emph{greedy policy}\index{greedy policy} $\pi'$ with respect to $v^\pi$ satisfies the improvement condition~\eqref{eq:improvement-condition} maximally:
+\begin{equation}
+\label{eq:greedy-policy}
+\pi'(s) \in \argmax_{a \in \cA} q^\pi(s,a)
+= \argmax_{a \in \cA} \sum_{s',r} p(s',r \mid s,a)\bigl[r + \gamma\,v^\pi(s')\bigr].
+\end{equation}
+By construction, $q^\pi(s, \pi'(s)) = \max_a q^\pi(s,a) \ge v^\pi(s)$ for all $s$, so the theorem applies.
+
+\paragraph{When improvement stops.}\index{optimality condition}
+Suppose the greedy improvement produces $\pi' = \pi$---that is, the current policy is already greedy with respect to its own value function.  Then $v^\pi(s) = \max_a q^\pi(s,a)$ for all $s$, which is precisely the \emph{Bellman optimality equation}\index{Bellman optimality equation}:
+\[
+v^\pi(s) = \max_{a \in \cA} \sum_{s',r} p(s',r \mid s,a)\bigl[r + \gamma\, v^\pi(s')\bigr] = v^*(s).
+\]
+Hence $\pi$ is an optimal policy.  This observation drives the policy iteration algorithm.
+
+% ===========================================================
+\section{Policy Iteration}
+\label{sec:policy-iteration}
+\index{policy iteration}
+
+Policy iteration alternates between the two steps developed above: evaluate the current policy to convergence, then greedily improve it.
+
+\begin{algorithm}[ht]
+\caption{Policy Iteration}
+\label{alg:policy-iteration}
+\KwIn{MDP dynamics $p$, discount $\gamma$, threshold $\theta > 0$}
+Initialise $V(s) \in \R$ and $\pi(s) \in \cA$ arbitrarily for all $s \in \cS$; $V(\text{terminal}) \leftarrow 0$\;
+\Repeat{$\textsc{policy-stable} = \mathtt{true}$}{
+  \tcp{Policy Evaluation}
+  \Repeat{$\Delta < \theta$}{
+    $\Delta \leftarrow 0$\;
+    \For{each $s \in \cS$}{
+      $v \leftarrow V(s)$\;
+      $V(s) \leftarrow \displaystyle\sum_{s',r} p(s',r \mid s,\pi(s))\bigl[r + \gamma\,V(s')\bigr]$\;
+      $\Delta \leftarrow \max(\Delta, |v - V(s)|)$\;
+    }
+  }
+  \tcp{Policy Improvement}
+  $\textsc{policy-stable} \leftarrow \mathtt{true}$\;
+  \For{each $s \in \cS$}{
+    $a_{\text{old}} \leftarrow \pi(s)$\;
+    $\pi(s) \leftarrow \displaystyle\argmax_{a} \sum_{s',r} p(s',r \mid s,a)\bigl[r + \gamma\,V(s')\bigr]$\;
+    \If{$a_{\text{old}} \neq \pi(s)$}{$\textsc{policy-stable} \leftarrow \mathtt{false}$}
+  }
+}
+\KwOut{$V \approx v^*$, $\pi \approx \pi^*$}
+\end{algorithm}
+
+\subsection*{Finite Convergence}
+
+\begin{theorem}[Finite convergence of policy iteration]
+\label{thm:pi-convergence}
+\index{policy iteration!convergence}
+Policy iteration terminates in a finite number of outer iterations.
+\end{theorem}
+
+\begin{proof}
+Each policy $\pi$ is a deterministic mapping from $\cS$ to $\cA$.  There are at most $|\cA|^{|\cS|}$ such mappings\,---\,a finite number.  The policy improvement theorem guarantees that whenever $\pi' \ne \pi$ is produced, $v^{\pi'} \ge v^\pi$ with strict inequality somewhere.  Therefore the sequence of policies generated by policy iteration is strictly improving in value (until it stabilises), which prevents any policy from being visited twice.  Since there are finitely many policies, the algorithm must terminate.
+\end{proof}
+
+\begin{remark}
+In practice, policy iteration converges in very few iterations\,---\,often fewer than ten\,---\,even for large MDPs.  Each iteration requires solving a linear system (or running iterative evaluation to convergence), which dominates the computation.
+\end{remark}
+
+\begin{example}[Policy Iteration on the Gridworld]
+\label{ex:pi-gridworld}
+Returning to the $4\times4$ gridworld of Example~\ref{ex:gridworld-eval}, we start policy iteration from the equiprobable random policy.
+
+\begin{itemize}[leftmargin=*]
+\item \textbf{Iteration 0}: Evaluate the random policy (as computed above).  The greedy improvement immediately produces a much better policy: in every state, move toward the nearest terminal.
+\item \textbf{Iteration 1}: The improved policy already looks near-optimal.  Re-evaluation reveals that it achieves $v^{\pi_1}(s) = -$ (Manhattan distance to nearest terminal) for all $s$, exactly.
+\item \textbf{Iteration 2}: The greedy policy with respect to $v^{\pi_1}$ is identical to $\pi_1$.  Policy iteration halts.
+\end{itemize}
+Thus, policy iteration converges in only 2 outer iterations on this small problem, even though iterative evaluation at each step requires many inner sweeps.
+\end{example}
+
+% ===========================================================
+\section{Value Iteration}
+\label{sec:value-iteration}
+\index{value iteration}
+
+Policy iteration can be expensive if policy evaluation requires many sweeps to converge before each improvement step.  \emph{Value iteration} avoids this by interleaving a single evaluation step with an improvement step, effectively applying the \emph{Bellman optimality operator}\index{Bellman optimality operator} directly.
+
+\subsection*{The Bellman Optimality Operator}
+
+Define $T^*$ by
+\begin{equation}
+\label{eq:bellman-optimality-op}
+(T^* v)(s) = \max_{a \in \cA} \sum_{s' \in \cS}\sum_r p(s',r \mid s,a)\bigl[r + \gamma\, v(s')\bigr].
+\end{equation}
+The optimal value function $v^*$ is the unique fixed point of $T^*$: $T^* v^* = v^*$.
+
+\begin{theorem}[Contraction of $T^*$]
+\label{thm:tstar-contraction}
+$T^*$ is a $\gamma$-contraction on $(B(\cS), \|\cdot\|_\infty)$:
+\[
+\|T^* u - T^* v\|_\infty \le \gamma\,\|u - v\|_\infty.
+\]
+Consequently, the iterates $v_{k+1} = T^* v_k$ converge to $v^*$ from any $v_0$.
+\end{theorem}
+
+\begin{proof}
+For any $s \in \cS$,
+\begin{align*}
+(T^* u)(s) - (T^* v)(s)
+&= \max_a \sum_{s',r} p(s',r\mid s,a)\,\gamma\, u(s')
+- \max_a \sum_{s',r} p(s',r\mid s,a)\,\gamma\, v(s') \\
+&\le \max_a \sum_{s',r} p(s',r\mid s,a)\,\gamma\bigl[u(s') - v(s')\bigr] \\
+&\le \gamma\,\|u - v\|_\infty,
+\end{align*}
+using $\max f - \max g \le \max(f - g)$ and non-negativity of the transition weights.  Symmetrically, $(T^* v)(s) - (T^* u)(s) \le \gamma\|u-v\|_\infty$.  Taking the sup norm gives the result.
+\end{proof}
+
+\subsection*{Algorithm}
+
+\begin{algorithm}[ht]
+\caption{Value Iteration}
+\label{alg:value-iteration}
+\KwIn{MDP dynamics $p$, discount $\gamma$, threshold $\theta > 0$}
+Initialise $V(s) \leftarrow 0$ for all $s \in \cS$; $V(\text{terminal}) \leftarrow 0$\;
+\Repeat{$\Delta < \theta$}{
+  $\Delta \leftarrow 0$\;
+  \For{each $s \in \cS$}{
+    $v \leftarrow V(s)$\;
+    $V(s) \leftarrow \displaystyle\max_a \sum_{s',r} p(s',r \mid s,a)\bigl[r + \gamma\, V(s')\bigr]$\;
+    $\Delta \leftarrow \max(\Delta,\; |v - V(s)|)$\;
+  }
+}
+Output a deterministic greedy policy $\pi$ w.r.t.\ $V$\;
+\KwOut{$V \approx v^*$, $\pi \approx \pi^*$}
+\end{algorithm}
+
+\paragraph{Convergence rate.}
+Since $T^*$ is a $\gamma$-contraction, the error satisfies $\|v_k - v^*\|_\infty \le \gamma^k \|v_0 - v^*\|_\infty$.  For a desired accuracy $\varepsilon$, the number of iterations required is $k \ge \log(\varepsilon / \|v_0 - v^*\|_\infty) / \log \gamma$, which grows as $O\!\bigl((1-\gamma)^{-1}\log(1/\varepsilon)\bigr)$.  Smaller $\gamma$ means faster convergence but heavier discounting of future rewards.
+
+\subsection*{Relationship to Policy Iteration}
+
+Value iteration can be viewed as \emph{policy iteration with truncated evaluation}: instead of running evaluation to convergence, perform exactly one sweep of $T^\pi$ before improving.  Since $T^\pi_k = T^*$ when $\pi_k$ is greedy with respect to $v_k$ (by definition of the max in~\eqref{eq:bellman-optimality-op}), each value-iteration sweep is simultaneously one step of both evaluation and improvement.
+
+More generally, if policy evaluation is stopped after $m$ sweeps (rather than $1$ or $\infty$), we obtain a family of algorithms that interpolate between pure value iteration ($m=1$) and policy iteration ($m \to \infty$).
+
+\begin{example}[Value Iteration on the Gridworld]
+\label{ex:vi-gridworld}
+On the same $4\times4$ gridworld, we apply value iteration starting from $V \equiv 0$.
+
+After each sweep the value function rapidly reflects the structure of optimal behaviour.  After approximately 10--15 sweeps with threshold $\theta = 10^{-4}$, the algorithm converges and the greedy policy extracted from $V$ is identical to the optimal policy found by policy iteration.  Value iteration requires fewer total sweeps than policy iteration (which needs many inner sweeps per outer iteration) when the number of states is small, but the advantage reverses for larger MDPs because policy iteration converges in very few outer iterations.
+\end{example}
+
+% ===========================================================
+\section{Generalized Policy Iteration}
+\label{sec:gpi}
+\index{Generalized Policy Iteration (GPI)}
+
+Policy evaluation and policy improvement are not rigidly sequential steps\,---\,they can be interleaved in any proportion.  The term \emph{Generalized Policy Iteration} (GPI) refers to the general idea of maintaining a value function $V$ and a policy $\pi$, and repeatedly applying some form of evaluation (making $V$ more consistent with $\pi$) and some form of improvement (making $\pi$ more greedy with respect to $V$).
+
+\paragraph{Two competing processes.}\index{GPI!competing processes}
+The two processes pull in opposite directions: evaluation pushes $V$ toward $v^\pi$ for the \emph{current} $\pi$, while improvement changes $\pi$ to be greedy with respect to the current $V$, which immediately makes $V$ an inaccurate estimate for the \emph{new} $\pi$.  Despite this tension, the two processes cooperate in the following sense: each makes progress toward the same goal.  The interaction can be visualised as two lines in value-policy space being pulled toward each other (see Figure~\ref{fig:gpi}).
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[>=Stealth, thick,
+  box/.style={draw, rounded corners=3pt, minimum width=2.8cm, minimum height=1cm,
+               font=\small, align=center, fill=white},
+  every node/.append style={font=\small}]
+
+% Nodes
+\node[box, fill=blue!10] (eval) at (0,0) {Policy\\Evaluation\\$V \to v^\pi$};
+\node[box, fill=orange!15] (impr) at (5,0) {Policy\\Improvement\\$\pi \to \text{greedy}(V)$};
+
+% Arrows between them
+\draw[->, bend left=30] (eval) to node[above] {$\pi$ fixed, $V$ improved} (impr);
+\draw[->, bend left=30] (impr) to node[below] {$V$ fixed, $\pi$ improved} (eval);
+
+% Convergence label
+\node[draw, dashed, rounded corners=3pt, fill=green!10, minimum width=2.2cm,
+      minimum height=0.8cm, align=center] (opt) at (2.5, -2.2) {$v = v^*$\\$\pi = \pi^*$};
+\draw[->, dashed, gray] (eval) -- (opt);
+\draw[->, dashed, gray] (impr) -- (opt);
+
+\node[above=0.7cm of eval, font=\normalsize\bfseries] {Generalized Policy Iteration};
+\end{tikzpicture}
+\caption{The GPI framework.  Policy evaluation and policy improvement interact repeatedly.  Each step moves toward the stable fixed point where $V = v^*$ and $\pi = \pi^*$ simultaneously.  In policy iteration, evaluation runs to completion before each improvement step.  In value iteration, a single sweep serves as both.  All model-free algorithms in subsequent chapters can be understood as approximate GPI.}
+\label{fig:gpi}
+\end{figure}
+
+\paragraph{GPI as the universal framework.}
+Every major RL algorithm fits the GPI template.  In Monte Carlo control (Chapter~\ref{ch:mc}), evaluation is performed by averaging sample returns, and improvement is an $\varepsilon$-greedy step.  In temporal-difference learning (Chapter~\ref{ch:td}), evaluation uses bootstrapped one-step estimates.  In actor-critic methods (Chapter~\ref{ch:actor-critic}), the actor performs improvement and the critic performs evaluation.
+
+\paragraph{On-policy vs.\ off-policy GPI.}\index{on-policy}\index{off-policy}
+An important distinction that becomes crucial in model-free RL is whether the data used for evaluation comes from the same policy being evaluated (\emph{on-policy}) or from a different \emph{behaviour policy} (\emph{off-policy}).  In pure DP, this distinction is moot because the model $p$ provides exact expectations; no data is collected at all.  However, once we move to sampling-based methods in Chapters~\ref{ch:mc}--\ref{ch:td}, the distinction becomes central.
+
+% ===========================================================
+\section{Asynchronous Dynamic Programming}
+\label{sec:async-dp}
+\index{asynchronous DP}
+
+The algorithms described so far perform \emph{synchronous} sweeps: every state is updated exactly once per iteration.  \emph{Asynchronous} DP relaxes this requirement, updating states in any order, any number of times, without waiting for a complete sweep.
+
+\paragraph{In-place updates.}\index{in-place DP}
+In the synchronous version, we maintain two arrays $V$ (current) and $V'$ (next), and write $V'(s) = T^\pi V(s)$ using only values from $V$.  In the \emph{in-place} variant, we maintain a single array and immediately overwrite $V(s)$ with the new value.  Because the update of $V(s)$ may use already-updated values $V(s')$ for $s' \ne s$, the in-place version is not synchronous, yet it typically converges faster in practice: an update in state $s'$ propagates immediately to any state $s$ that is updated later in the same sweep.
+
+\paragraph{Prioritized sweeping.}\index{prioritized sweeping}
+Not all states are equally important to update.  \emph{Prioritized sweeping} maintains a priority queue and updates the state $s$ whose Bellman error $|v - T^\pi V(s)|$ is largest.  When a state is updated, the priorities of all its predecessors (states from which $s$ is reachable) are recomputed.  This focuses computation on the most informative updates and can dramatically reduce the number of updates needed for convergence.
+
+\paragraph{Real-time DP.}\index{real-time DP}
+In \emph{real-time} DP (Barto, Bradtke, and Singh, 1995), the agent interacts with the environment in real time and updates only the states it actually visits.  This is the conceptual bridge between model-based DP and model-free TD learning: if the model is available, visited states can be updated using exact Bellman backups; if not, the backups are replaced by sampled transitions.
+
+\begin{remark}
+Asynchronous DP converges to $v^*$ (or $v^\pi$) as long as every state continues to be updated infinitely often\,---\,that is, no state is permanently ignored.  This \emph{sufficient updates} condition is easy to satisfy by visiting states repeatedly in any order.
+\end{remark}
+
+% ===========================================================
+\section{Efficiency and Limitations of Dynamic Programming}
+\label{sec:dp-limitations}
+\index{curse of dimensionality}
+
+\paragraph{Polynomial complexity.}
+DP algorithms are polynomial in $|\cS|$ and $|\cA|$.  Each sweep of policy evaluation or value iteration requires $O(|\cS|^2 |\cA|)$ operations (for each of $|\cS|$ states, the update sums over $|\cA|$ actions and $|\cS|$ next states).  Policy iteration performs at most $|\cA|^{|\cS|}$ outer iterations, but in practice converges in very few (typically $O(\log |\cS|)$).  Compare this to brute-force policy enumeration, which requires evaluating all $|\cA|^{|\cS|}$ policies.
+
+\paragraph{Curse of dimensionality.}\index{curse of dimensionality}
+Despite polynomial complexity in $|\cS|$, DP is often impractical because $|\cS|$ itself is astronomically large.  A robot with $n$ continuous joint angles discretised into $d$ bins each has $|\cS| = d^n$ states, which grows exponentially in $n$.  This is Bellman's \emph{curse of dimensionality}: the state space explodes with the number of dimensions.  For a modest robot with 10 joints and 100 bins per joint, $|\cS| = 10^{20}$---hopelessly intractable.
+
+\paragraph{Comparison with linear programming.}
+The optimal value function $v^*$ can also be found by solving a linear program with $|\cS|$ variables and $|\cS| \cdot |\cA|$ constraints.  LP-based methods can in principle exploit efficient LP solvers, but they scale poorly with $|\cS|$ as well and are generally not competitive with DP for large problems.
+
+\paragraph{Why sampling is essential.}
+The limitations of DP motivate the model-free methods studied in the rest of this book.  In Monte Carlo methods (Chapter~\ref{ch:mc}), $v^\pi$ is estimated from sampled trajectories without requiring $p$.  In temporal-difference methods (Chapter~\ref{ch:td}), bootstrapping allows incremental updates from individual transitions.  In all cases, the GPI framework is preserved but exact Bellman backups are replaced by approximate, sampled ones.
+
+The key insight is this: \emph{DP tells us what to compute; sampling tells us how to compute it when $p$ is unavailable or the state space is too large}.
+
+% ===========================================================
+\section{Worked Example: Jack's Car Rental}
+\label{sec:car-rental}
+\index{Jack's Car Rental}
+
+To illustrate policy iteration on a realistic problem, we describe the \emph{Jack's Car Rental} example, a classic from Sutton and Barto (2018).
+
+\subsection*{Problem Setup}
+
+Jack manages two car rental locations, A and B.  Each day, customers arrive at each location to rent cars.  Rentals and returns are approximately Poisson distributed: expected 3 rentals and 3 returns per day at A, and 4 rentals and 2 returns per day at B.  Jack receives \$10 for each car rented (if available) and can move cars overnight between locations (up to 5 cars per night, at a cost of \$2 per car moved).  Each location can hold at most 20 cars.
+
+The MDP is defined as follows.  The state $(n_A, n_B)$ is the number of cars at each location at the end of the day (before overnight moves), ranging from $0$ to $20$ at each site.  The action $a \in \{-5,\ldots,5\}$ is the net number of cars moved from A to B (negative means moving from B to A).  The reward is the expected rental income minus moving costs.  The state space has $21^2 = 441$ states, and the action space has $11$ actions, making this tractable for exact DP.
+
+\subsection*{Policy Evolution}
+
+Figure~\ref{fig:car-rental} shows schematically how the policy evolves under policy iteration.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[>=Stealth, scale=0.95,
+  box/.style={draw, minimum width=3.5cm, minimum height=2.4cm, fill=blue!5, align=center, font=\small},
+  arr/.style={->, thick}]
+
+\node[box] (pi0) at (0,0) {$\pi_0$: Move 0 cars\\everywhere\\\emph{(do nothing)}};
+\node[box] (pi1) at (4.5,0) {$\pi_1$: Move cars\\from B to A\\\emph{(B has more returns)}};
+\node[box] (pi2) at (9,0) {$\pi_2$: Balanced\\shuttling\\$\approx \pi^*$};
+
+\draw[arr] (pi0) -- node[above, font=\scriptsize]{eval + improve} (pi1);
+\draw[arr] (pi1) -- node[above, font=\scriptsize]{eval + improve} (pi2);
+
+\node[below=0.3cm of pi0, font=\scriptsize, align=center] {Iteration 0\\\emph{(random initialisation)}};
+\node[below=0.3cm of pi1, font=\scriptsize, align=center] {Iteration 1};
+\node[below=0.3cm of pi2, font=\scriptsize, align=center] {Iteration 4--5\\\emph{(converged)}};
+\end{tikzpicture}
+\caption{Qualitative evolution of the policy under policy iteration for the car rental problem.  Early policies are crude; after 4--5 iterations the policy stabilises to the optimal shuttling strategy, which moves cars from B toward A (since B has higher expected returns, keeping cars at A captures more rental income).}
+\label{fig:car-rental}
+\end{figure}
+
+\paragraph{Observations.}
+The optimal policy moves cars from the location with higher expected returns (B) toward the location with higher expected rentals (A), carefully balancing the $\$2$ per-car transport cost against the expected gain in rental income.  Policy iteration converges in 4--5 outer iterations, each requiring solving a $441 \times 441$ linear system.  This demonstrates how policy iteration handles structured reward and transition dynamics efficiently, reaching the optimum far faster than pure value iteration or exhaustive search.
+
+% ===========================================================
+\section{Summary}
+\label{sec:dp-summary}
+
+\begin{itemize}[leftmargin=*]
+\item Dynamic programming assumes a known model $p(s',r \mid s,a)$ and solves for the optimal value function and policy exactly.
+\item \textbf{Iterative policy evaluation} applies the Bellman operator $T^\pi$ repeatedly; convergence is guaranteed by the contraction mapping theorem with rate $\gamma$.
+\item The \textbf{policy improvement theorem} guarantees that the greedy policy with respect to $v^\pi$ is at least as good as $\pi$; if it equals $\pi$, then $\pi$ is optimal.
+\item \textbf{Policy iteration} alternates evaluation and improvement and terminates in finitely many iterations because the sequence of policies is strictly improving and the policy space is finite.
+\item \textbf{Value iteration} applies $T^*$ directly, combining evaluation and improvement in a single sweep, and converges geometrically to $v^*$.
+\item \textbf{Generalized Policy Iteration} is the unifying framework: all RL algorithms can be seen as interleaved evaluation and improvement, differing only in how approximate each step is.
+\item \textbf{Asynchronous DP} updates states in flexible order; prioritized sweeping focuses computation where Bellman errors are largest.
+\item DP is polynomial in $|\cS|$ and $|\cA|$ but impractical for large state spaces due to the curse of dimensionality, motivating the sampling-based methods of Chapters~\ref{ch:mc} and~\ref{ch:td}.
+\end{itemize}
+
+% ===========================================================
+\section*{Exercises}
+\addcontentsline{toc}{section}{Exercises}
+
+\begin{exercise}
+\label{ex:dp-contraction-rate}
+Let $v_0 \equiv 0$ and suppose $\|v^*\|_\infty \le R_{\max}/(1-\gamma)$.
+\begin{enumerate}[label=(\alph*)]
+  \item Show that $\|v_k - v^*\|_\infty \le \gamma^k R_{\max}/(1-\gamma)$ for the iterates $v_{k+1} = T^* v_k$.
+  \item For $\gamma = 0.99$ and $R_{\max} = 1$, how many iterations of value iteration are needed to achieve $\|v_k - v^*\|_\infty \le 10^{-3}$?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:dp-policy-improvement-stochastic}
+Generalise the policy improvement theorem to \emph{stochastic} policies $\pi'$.  That is, suppose $\sum_a \pi'(a \mid s)\,q^\pi(s,a) \ge v^\pi(s)$ for all $s$.  Prove that $v^{\pi'} \ge v^\pi$ pointwise.  \emph{Hint}: the proof is essentially the same as for deterministic policies; the operator $T^{\pi'}$ is still a contraction.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:dp-value-iter-policy}
+After value iteration converges to $V \approx v^*$ with $\|V - v^*\|_\infty \le \varepsilon$, what bound can you give on the sub-optimality of the greedy policy $\pi$ extracted from $V$?  That is, bound $v^*(s) - v^\pi(s)$ in terms of $\varepsilon$ and $\gamma$.  \emph{Hint}: use the contraction argument twice.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:dp-gridworld-compute}
+In the $4\times4$ gridworld with $\gamma=1$ and the random policy ($\pi(a \mid s) = 0.25$):
+\begin{enumerate}[label=(\alph*)]
+  \item Write out the Bellman equations for the four corner states and the four edge-midpoint states.
+  \item Verify numerically (or algebraically) that the converged values in Example~\ref{ex:gridworld-eval} satisfy these equations.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:dp-number-of-policies}
+A finite MDP has $|\cS|=5$ states and $|\cA|=3$ actions.  How many deterministic policies are there?  Policy iteration visits each policy at most once.  Assuming each outer iteration takes $O(|\cS|^2|\cA|)$ work, what is a worst-case bound on total computation?  Compare with the work of exhaustive policy evaluation.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:dp-async}
+Explain why an in-place synchronous sweep (single array, states updated left-to-right in the gridworld) can converge faster than the two-array synchronous version.  Give an intuitive example in the $4\times4$ gridworld where an update propagates across multiple states in a single sweep.
+\end{exercise}
+
+\begin{exercise}[Truncated policy evaluation]
+\label{ex:dp-truncated}
+Define \emph{$m$-step policy iteration} as policy iteration in which the evaluation phase performs exactly $m$ sweeps of $T^\pi$ before each improvement step.  Show that:
+\begin{enumerate}[label=(\alph*)]
+  \item $m=\infty$ recovers standard policy iteration.
+  \item $m=1$ recovers value iteration.
+  \item For all finite $m$, the sequence of value functions is non-decreasing and converges to $v^*$.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:dp-bellman-lp}
+Show that the optimal value function $v^*$ is the \emph{smallest} super-solution to the Bellman optimality equation: that is, $v^*$ is the component-wise minimum of all functions $v$ satisfying $v(s) \ge (T^* v)(s)$ for all $s$.  Use this to formulate finding $v^*$ as a linear program.
+\end{exercise}
+
+\begin{exercise}[Jack's Car Rental modification]
+\label{ex:dp-car-rental}
+In the car rental problem of Section~\ref{sec:car-rental}, Jack hires a second employee.  The first employee can move one car per night for free; any additional cars still cost \$2 each.  Furthermore, each location can now hold up to 25 cars, but a parking fee of \$4 is charged per night for each location that has more than 10 cars.  Describe how you would modify the reward function and state space definition.  Which changes affect the transition probabilities?  Which affect only the reward?
+\end{exercise}
+
+\begin{exercise}
+\label{ex:dp-on-off-policy}
+In model-based DP, we argued that the on-policy/off-policy distinction is moot.  Explain precisely why.  Then explain what goes wrong if we try to apply \emph{off-policy} updates in a model-free (sampling-based) version of policy evaluation, and state the condition required to make such updates consistent.
+\end{exercise}

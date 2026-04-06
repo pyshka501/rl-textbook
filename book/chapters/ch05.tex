@@ -1,0 +1,739 @@
+\chapter{Monte Carlo Methods}
+\label{ch:mc}
+
+\begin{quote}
+\itshape
+To find the value of a position, simulate many games from that position, and average the results.
+\end{quote}
+
+\bigskip
+
+The dynamic-programming methods of Chapter~\ref{ch:dp} are powerful but carry a heavy prerequisite: complete knowledge of the environment's transition probabilities and reward function.  In many problems of practical interest\,---\,card games, robotic locomotion, dialogue systems\,---\,such a model is simply unavailable, or is too large to make full sweeps over all states tractable.  \emph{Monte Carlo methods}\index{Monte Carlo methods} eliminate this requirement entirely.  Rather than computing value functions from a mathematical specification of the environment, they \emph{learn} value functions directly from sampled episodes of interaction.
+
+The core idea is as old as statistical simulation itself: if you want to know the expected outcome of a stochastic process, run it many times and average the results.  Applied to reinforcement learning, this means generating complete episodes under a fixed policy, computing the return (the discounted sum of rewards) that followed each visit to a state or state--action pair, and averaging those returns.  As the number of episodes grows, the law of large numbers guarantees convergence to the true value function.
+
+Monte Carlo methods occupy a pivotal position in the RL landscape.  They mark the transition from model-based to \emph{model-free}\index{model-free} learning and introduce the fundamental dichotomy between \emph{on-policy}\index{on-policy} and \emph{off-policy}\index{off-policy} learning that will recur throughout the remainder of this book.  They require complete episodes, which makes them naturally suited to episodic tasks; the temporal-difference methods of Chapter~\ref{ch:td} will later remove even this restriction.
+
+
+% ===========================================================
+\section{Monte Carlo Prediction}
+\label{sec:mc-prediction}
+\index{Monte Carlo prediction}
+
+\subsection*{Setting and Notation}
+
+We work throughout this chapter with a finite episodic MDP (see Chapter~\ref{ch:mdp}) with state space $\cS$, action space $\cA$, discount factor $\gamma \in [0,1)$, and a fixed policy $\pi$.  A single episode is a trajectory
+\[
+  S_0, A_0, R_1, S_1, A_1, R_2, \;\dots,\; S_{\tau-1}, A_{\tau-1}, R_{\tau}, S_{\tau} = \mathrm{T},
+\]
+where $\mathrm{T}$ is the terminal state and $\tau$ is the (random) episode length.  The \emph{return}\index{return} from time step $t$ onward is
+\begin{equation}
+  \label{eq:mc-return}
+  G_t = \sum_{k=0}^{\tau - t - 1} \gamma^k R_{t+1+k}.
+\end{equation}
+The state value function is $v^{\pi}(s) = \E_\pi[G_t \mid S_t = s]$.
+
+We assume throughout that: (i) episodes are generated independently under $\pi$; (ii) every episode terminates almost surely, $\Prob_\pi(\tau < \infty) = 1$; (iii) rewards are bounded, $|R_t| \le R_{\max}$ a.s.; and (iv) each state $s$ of interest is visited with positive probability per episode.
+
+\subsection*{First-Visit and Every-Visit Monte Carlo}
+
+Within a single episode, a state $s$ may be visited multiple times.  Two natural averaging schemes arise from how we handle these repeated visits.
+
+\begin{definition}[First-visit MC estimator]
+\label{def:first-visit-mc}
+\index{first-visit Monte Carlo}
+The \textbf{first-visit Monte Carlo} estimator of $v^\pi(s)$ averages, across episodes, the return $G_t$ that follows the \emph{first} time step $t$ at which $S_t = s$ in each episode.  If $G_1^{\mathrm{FV}}(s), G_2^{\mathrm{FV}}(s), \dots$ denote these returns collected from $n$ episodes, the estimator is
+\begin{equation}
+  \label{eq:fv-estimator}
+  \widehat{v}_n^{\,\mathrm{FV}}(s) = \frac{1}{n} \sum_{i=1}^{n} G_i^{\mathrm{FV}}(s).
+\end{equation}
+\end{definition}
+
+\begin{definition}[Every-visit MC estimator]
+\label{def:every-visit-mc}
+\index{every-visit Monte Carlo}
+The \textbf{every-visit Monte Carlo} estimator averages the returns that follow \emph{every} visit to $s$ across all episodes.  For episode $i$, let $K_i(s) = \sum_t \ind\{S_t^{(i)} = s\}$ be the visit count and $X_i(s) = \sum_t \ind\{S_t^{(i)} = s\} G_t^{(i)}$ the summed returns.  The estimator after $n$ episodes is
+\begin{equation}
+  \label{eq:ev-estimator}
+  \widehat{v}_n^{\,\mathrm{EV}}(s) = \frac{\sum_{i=1}^{n} X_i(s)}{\sum_{i=1}^{n} K_i(s)}.
+\end{equation}
+\end{definition}
+
+Both estimators target the same quantity $v^\pi(s)$.  Their difference is statistical, not definitional.
+
+\subsection*{Unbiasedness of First-Visit MC}
+
+\begin{theorem}[First-visit MC is unbiased and consistent]
+\label{thm:fv-unbiased}
+Under the assumptions above, each return $G_i^{\mathrm{FV}}(s)$ is an i.i.d.\ random variable with mean $v^\pi(s)$ and finite variance.  Consequently:
+\begin{enumerate}
+  \item $\E\!\left[\widehat{v}_n^{\,\mathrm{FV}}(s)\right] = v^\pi(s)$ for every $n \ge 1$ (unbiasedness).
+  \item $\widehat{v}_n^{\,\mathrm{FV}}(s) \xrightarrow[n \to \infty]{\mathrm{a.s.}} v^\pi(s)$ (strong consistency).
+\end{enumerate}
+\end{theorem}
+
+\begin{proof}
+\textbf{Independence.}  Each $G_i^{\mathrm{FV}}(s)$ is computed from a separate, independently generated episode.  Hence the sequence $G_1^{\mathrm{FV}}(s), G_2^{\mathrm{FV}}(s), \dots$ consists of independent random variables.
+
+\textbf{Identical distribution.}  Consider any episode and let $T^*$ be the first time step at which $S_{T^*} = s$.  By the Markov property, the distribution of the trajectory from $T^*$ onward depends only on the current state $s$ and not on the history $S_0, A_0, \dots, S_{T^*-1}$.  Since $\pi$ is fixed, the return $G_{T^*}$ from that point has exactly the distribution of $G_t \mid S_t = s$ under policy $\pi$.  Thus $G_i^{\mathrm{FV}}(s) \stackrel{d}{=} G_t \mid S_t = s$ for every $i$.
+
+\textbf{Finite variance.}  Because $|R_t| \le R_{\max}$ and $\tau < \infty$ a.s.,
+\[
+  |G_t| \le R_{\max} \sum_{k=0}^{\tau-1} \gamma^k \le \frac{R_{\max}}{1-\gamma} < \infty \quad \text{a.s.}
+\]
+Hence $G_i^{\mathrm{FV}}(s)$ is bounded a.s.\ and has finite variance $\sigma_s^2 < \infty$.
+
+\textbf{Unbiasedness.}  By linearity of expectation,
+\[
+  \E\!\left[\widehat{v}_n^{\,\mathrm{FV}}(s)\right]
+  = \frac{1}{n} \sum_{i=1}^{n} \E\!\left[G_i^{\mathrm{FV}}(s)\right]
+  = v^\pi(s).
+\]
+
+\textbf{Strong consistency.}  Since $G_1^{\mathrm{FV}}(s), G_2^{\mathrm{FV}}(s), \dots$ are i.i.d.\ with finite mean, the strong law of large numbers gives
+\[
+  \widehat{v}_n^{\,\mathrm{FV}}(s) = \frac{1}{n}\sum_{i=1}^{n} G_i^{\mathrm{FV}}(s) \xrightarrow{\mathrm{a.s.}} v^\pi(s). \qedhere
+\]
+\end{proof}
+
+\begin{remark}
+The variance of $\widehat{v}_n^{\,\mathrm{FV}}(s)$ equals $\sigma_s^2/n$, which decreases at the standard Monte Carlo rate of $1/\sqrt{n}$.  This is in contrast to, say, bootstrap methods, which can achieve faster rates in smooth models.  However, no distributional assumptions whatsoever are required here\,---\,only the existence of bounded rewards and episodic termination.
+\end{remark}
+
+\subsection*{Convergence of Every-Visit MC}
+
+\begin{lemma}
+\label{lem:ev-key-identity}
+For any state $s$ and any episode, $\E[X_1(s)] = v^\pi(s)\,\E[K_1(s)]$.
+\end{lemma}
+
+\begin{proof}
+By linearity and the tower property,
+\begin{align*}
+  \E[X_1(s)]
+  &= \sum_{t \ge 0} \E\!\left[\ind\{S_t = s\}\,G_t\right]
+  = \sum_{t \ge 0} \E\!\left[\ind\{S_t = s\}\,\E[G_t \mid S_t]\right]\\
+  &= v^\pi(s)\sum_{t \ge 0} \Prob(S_t = s)
+  = v^\pi(s)\,\E[K_1(s)]. \qedhere
+\end{align*}
+\end{proof}
+
+\begin{theorem}[Every-visit MC is consistent]
+\label{thm:ev-consistent}
+If $\E[K_1(s)] \in (0,\infty)$ and $\E[|X_1(s)|] < \infty$, then $\widehat{v}_n^{\,\mathrm{EV}}(s) \xrightarrow{\mathrm{a.s.}} v^\pi(s)$.
+\end{theorem}
+
+\begin{proof}
+The pairs $(X_i(s), K_i(s))$ are i.i.d.\ across episodes.  The strong law of large numbers gives
+\[
+  \frac{1}{n}\sum_{i=1}^n X_i(s) \xrightarrow{\mathrm{a.s.}} \E[X_1(s)], \qquad
+  \frac{1}{n}\sum_{i=1}^n K_i(s) \xrightarrow{\mathrm{a.s.}} \E[K_1(s)] > 0.
+\]
+The denominator is eventually positive a.s., so by the continuous mapping theorem (ratio rule):
+\[
+  \widehat{v}_n^{\,\mathrm{EV}}(s) \xrightarrow{\mathrm{a.s.}} \frac{\E[X_1(s)]}{\E[K_1(s)]} = v^\pi(s),
+\]
+where the last equality is Lemma~\ref{lem:ev-key-identity}.
+\end{proof}
+
+\begin{remark}
+Every-visit MC is \emph{biased} at any finite $n$ because $\E[\sum X_i / \sum K_i] \ne \E[\sum X_i]/\E[\sum K_i]$ in general (ratio-estimator bias).  However, the bias vanishes as $n \to \infty$, so every-visit MC is \emph{asymptotically} unbiased.  In practice, every-visit MC can have lower mean-squared error than first-visit when states are revisited frequently within an episode, because it uses more data.
+\end{remark}
+
+\subsection*{Incremental Implementation}
+
+Computing averages from scratch after each episode is wasteful.  Instead, we maintain a running count $N(s)$ and a running estimate $V(s)$, and update after each observed return $G$:
+\begin{equation}
+  \label{eq:mc-incremental}
+  N(s) \leftarrow N(s) + 1, \qquad
+  V(s) \leftarrow V(s) + \frac{1}{N(s)}\bigl(G - V(s)\bigr).
+\end{equation}
+This is algebraically equivalent to the running sample mean and requires $O(|\cS|)$ memory.
+
+\begin{algorithm}[ht]
+\caption{First-Visit Monte Carlo Prediction}
+\label{alg:fv-mc-prediction}
+\KwIn{Policy $\pi$, discount $\gamma$, number of episodes $N_{\mathrm{ep}}$}
+Initialise $V(s) \leftarrow 0$, $\mathit{Count}(s) \leftarrow 0$ for all $s \in \cS$\;
+\For{episode $= 1, 2, \dots, N_{\mathrm{ep}}$}{
+  Generate episode $S_0, A_0, R_1, \dots, S_\tau$ using $\pi$\;
+  $G \leftarrow 0$\;
+  \For{$t = \tau - 1, \tau - 2, \dots, 0$ \upshape(backward)}{
+    $G \leftarrow \gamma G + R_{t+1}$\;
+    \If{$S_t$ does not appear in $S_0, \dots, S_{t-1}$}{
+      $\mathit{Count}(S_t) \leftarrow \mathit{Count}(S_t) + 1$\;
+      $V(S_t) \leftarrow V(S_t) + \dfrac{1}{\mathit{Count}(S_t)}\bigl(G - V(S_t)\bigr)$\;
+    }
+  }
+}
+\Return $V$\;
+\end{algorithm}
+
+The backward pass through the episode (lines 4--9) computes all returns $G_t$ in $O(\tau)$ time using the recurrence $G_t = R_{t+1} + \gamma G_{t+1}$.
+
+\subsection*{MC Backup Diagram}
+
+The following TikZ diagram contrasts the backup diagrams of dynamic programming and Monte Carlo.  In DP, a one-step backup averages over all possible next states using the model.  In MC, a single sampled trajectory is followed all the way to the terminal state.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+    node distance = 0.7cm and 1.5cm,
+    state/.style  = {circle, draw, minimum size=0.5cm, thick},
+    action/.style = {circle, fill=black, minimum size=0.18cm, inner sep=0pt},
+    terminal/.style = {rectangle, draw, minimum width=0.7cm, minimum height=0.35cm, thick, fill=gray!30},
+    >=Stealth
+  ]
+  % --- MC backup (left) ---
+  \node[state]   (s0)                       {$s$};
+  \node[action]  (a0) [below=of s0]         {};
+  \node[state]   (s1) [below=of a0]         {};
+  \node[action]  (a1) [below=of s1]         {};
+  \node[state]   (s2) [below=of a1]         {};
+  \node[action]  (a2) [below=of s2]         {};
+  \node[state]   (s3) [below=of a2]         {};
+  \node[action]  (a3) [below=of s3]         {};
+  \node[terminal](sT) [below=of a3]         {$\mathrm{T}$};
+
+  \draw[->] (s0) -- (a0) node[midway, right=2pt] {\footnotesize $A_0$};
+  \draw[->] (a0) -- (s1) node[midway, right=2pt] {\footnotesize $R_1$};
+  \draw[->] (s1) -- (a1) node[midway, right=2pt] {\footnotesize $A_1$};
+  \draw[->] (a1) -- (s2) node[midway, right=2pt] {\footnotesize $R_2$};
+  \draw[->] (s2) -- (a2) node[midway, right=2pt] {\footnotesize $A_2$};
+  \draw[->] (a2) -- (s3) node[midway, right=2pt] {\footnotesize $R_3$};
+  \draw[->] (s3) -- (a3) node[midway, right=2pt] {\footnotesize $A_{\tau-1}$};
+  \draw[->] (a3) -- (sT) node[midway, right=2pt] {\footnotesize $R_\tau$};
+
+  \node[above=0.2cm of s0, font=\bfseries] {MC Backup};
+  \node[below=0.15cm of sT, font=\small, align=center] {full episode};
+
+  % --- DP backup (right) ---
+  \node[state]   (ds0) [right=3.5cm of s0]      {$s$};
+  \node[action]  (da1) [below left=0.7cm and 0.5cm of ds0]  {};
+  \node[action]  (da2) [below=0.7cm of ds0]                  {};
+  \node[action]  (da3) [below right=0.7cm and 0.5cm of ds0] {};
+  \node[state]   (ds1) [below=0.65cm of da1]   {};
+  \node[state]   (ds2) [below=0.65cm of da2]   {};
+  \node[state]   (ds3) [below=0.65cm of da3]   {};
+
+  \draw[->] (ds0) -- (da1);
+  \draw[->] (ds0) -- (da2);
+  \draw[->] (ds0) -- (da3);
+  \draw[->] (da1) -- (ds1);
+  \draw[->] (da2) -- (ds2);
+  \draw[->] (da3) -- (ds3);
+
+  \node[above=0.2cm of ds0, font=\bfseries] {DP Backup};
+  \node[below=0.15cm of ds2, font=\small, align=center] {one step, all branches};
+
+\end{tikzpicture}
+\caption{Backup diagrams for Monte Carlo (left) and dynamic programming (right).  MC follows a single sampled trajectory to the terminal state; DP fans out over all possible one-step transitions using the model.}
+\label{fig:mc-backup-diagram}
+\end{figure}
+
+
+% ===========================================================
+\section{Worked Example: Blackjack}
+\label{sec:mc-blackjack}
+\index{Blackjack}
+
+Blackjack (also called \emph{twenty-one}) is the canonical example used to illustrate Monte Carlo prediction in Sutton and Barto (2018).  It is particularly instructive because a complete environment model (transition probabilities) is technically available but tedious to write down, whereas Monte Carlo estimation is trivial to implement by simulating card play.
+
+\subsection*{The Blackjack MDP}
+
+The game is played against a dealer.  The player's goal is to obtain cards summing as close to 21 as possible without exceeding 21 (going ``bust'').  Face cards (Jack, Queen, King) count as 10; an Ace counts as 11 unless doing so would cause the total to exceed 21, in which case it counts as 1.
+
+\paragraph{State.}  The state is a triple $(x, d, a) \in \{12,\dots,21\} \times \{1,\dots,10\} \times \{0,1\}$, where:
+\begin{itemize}[leftmargin=*]
+  \item $x$ = the player's current sum (we only consider sums $\ge 12$; below 12, the player always hits safely);
+  \item $d$ = the dealer's one showing card (Ace counts as 1 here);
+  \item $a = 1$ if the player holds a usable Ace (an Ace currently counted as 11), $a = 0$ otherwise.
+\end{itemize}
+This gives $|\cS| = 10 \times 10 \times 2 = 200$ non-terminal states.
+
+\paragraph{Actions.}  At each state the player chooses \emph{stick} (stop drawing cards, $A=0$) or \emph{hit} (draw another card, $A=1$).
+
+\paragraph{Rewards.}  An episode ends when the player sticks or busts.  After sticking, the dealer plays to completion using a fixed rule (hit until sum $\ge 17$).  The reward is $+1$ for a player win, $-1$ for a loss, and $0$ for a draw.  All intermediate rewards are $0$.  The discount factor is $\gamma = 1$.
+
+\paragraph{Policy.}  We evaluate the \emph{simple policy} $\pi$ that sticks if $x \ge 20$ and hits otherwise.
+
+\subsection*{Episode Generation and Return Computation}
+
+\begin{example}[Sample Blackjack episode]
+\label{ex:blackjack-episode}
+\index{Blackjack!sample episode}
+Consider the following episode generated under the simple policy:
+\begin{center}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Step $t$ & State $(x, d, a)$ & Action & Next card & $R_{t+1}$ \\
+\midrule
+0 & $(15,\ 6,\ 0)$ & Hit  & 3  & 0 \\
+1 & $(18,\ 6,\ 0)$ & Hit  & 2  & 0 \\
+2 & $(20,\ 6,\ 0)$ & Stick & ---  & --- \\
+\multicolumn{3}{l}{Dealer plays: $6 + \text{hidden} = 6+9=15$, draws $4 \to 19$. Player 20 $>$ 19.} & & $+1$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The episode terminates with $\tau = 3$ and $R_3 = +1$.  The returns (with $\gamma=1$) are:
+\begin{align*}
+  G_2 &= R_3 = +1, \\
+  G_1 &= R_2 + G_2 = 0 + 1 = +1, \\
+  G_0 &= R_1 + G_1 = 0 + 1 = +1.
+\end{align*}
+Under first-visit MC, this episode contributes:
+\begin{itemize}[leftmargin=*]
+  \item Return $G_0 = +1$ to the estimate of $v^\pi(15, 6, 0)$ (first and only visit).
+  \item Return $G_1 = +1$ to $v^\pi(18, 6, 0)$.
+  \item Return $G_2 = +1$ to $v^\pi(20, 6, 0)$.
+\end{itemize}
+\end{example}
+
+Running $500{,}000$ such episodes produces an accurate picture of the value function.  States with $x = 20$ or $x = 21$ have values close to $+0.6$ (the player usually wins), while states with $x \in \{12, \dots, 14\}$ facing a dealer Ace have values near $-0.3$.  The Sutton--Barto textbook plots these values as 3-D surfaces, which reveal an intuitively clear landscape: high sums against weak dealer cards are good; low sums against strong dealer cards are bad.
+
+The example highlights why Monte Carlo is well suited here: computing $p(s', r \mid s, a)$ exactly requires enumerating the distribution of cards drawn from an infinite deck, whereas simulating deals is trivial.
+
+
+% ===========================================================
+\section{Monte Carlo Estimation of Action Values}
+\label{sec:mc-action-values}
+\index{action-value function!Monte Carlo estimation}
+
+When the environment model $p(s', r \mid s, a)$ is available, the state-value function $v^\pi$ is sufficient for control: given $v^\pi$, we can compute the greedy policy by a one-step look-ahead,
+\[
+  \pi'(s) \in \argmax_{a \in \cA} \sum_{s', r} p(s', r \mid s, a)\bigl[r + \gamma v^\pi(s')\bigr].
+\]
+Without a model, this look-ahead is impossible.  We cannot compute the right-hand side because $p(s', r \mid s, a)$ is unknown.  Therefore, in model-free control the natural target is the \emph{action-value function}\index{action-value function}
+\begin{equation}
+  \label{eq:mc-q-def}
+  Q^\pi(s, a) = \E_\pi[G_t \mid S_t = s,\; A_t = a].
+\end{equation}
+Given $Q^\pi$, the greedy policy is simply $\pi'(s) = \argmax_{a} Q^\pi(s, a)$, requiring no model at all.
+
+\paragraph{Estimating $Q^\pi$ by Monte Carlo.}  All the machinery of Section~\ref{sec:mc-prediction} applies verbatim with states $s$ replaced by state--action pairs $(s, a)$.  We define a first-visit MC estimator for $Q^\pi(s, a)$ by collecting returns from the first visit to $(s, a)$ in each episode, and an every-visit estimator by averaging all such returns.  Theorems~\ref{thm:fv-unbiased} and~\ref{thm:ev-consistent} hold with identical proofs.
+
+\paragraph{The exploring starts assumption.}
+\index{exploring starts}
+A key difficulty arises immediately: if the policy $\pi$ is deterministic, it will never choose certain actions in certain states, so the pairs $(s, a)$ for those actions are never visited, and $Q^\pi(s, a)$ is never estimated.  Without estimates for all pairs, we cannot improve the policy by choosing the greedy action.
+
+The \emph{exploring starts} assumption resolves this by requiring that every state--action pair has a positive probability of being the starting pair of an episode:
+\[
+  \Prob\!\bigl(S_0 = s,\; A_0 = a\bigr) > 0 \quad \forall\, s \in \cS,\; a \in \cA.
+\]
+Under exploring starts, every $(s, a)$ pair will eventually be visited infinitely often (since episodes are generated repeatedly), ensuring consistent estimation of $Q^\pi$ for all pairs.  Section~\ref{sec:mc-es} develops a full control algorithm under this assumption; Section~\ref{sec:mc-on-policy} then removes it.
+
+
+% ===========================================================
+\section{Monte Carlo Control with Exploring Starts}
+\label{sec:mc-es}
+\index{Monte Carlo control!exploring starts}
+
+The generalized policy iteration (GPI) framework of Chapter~\ref{ch:dp} alternates between \emph{policy evaluation} (estimate $Q^\pi$) and \emph{policy improvement} (choose the greedy policy with respect to the current $Q$).  Monte Carlo control instantiates this framework by using sampled episodes in place of Bellman sweeps.
+
+\begin{algorithm}[ht]
+\caption{Monte Carlo Control with Exploring Starts (MC-ES)}
+\label{alg:mc-es}
+\KwIn{Discount $\gamma$}
+Initialise $Q(s,a)$ arbitrarily, $\pi(s) \in \cA$ arbitrarily, $\mathit{Count}(s,a) \leftarrow 0$ for all $s, a$\;
+\For{each episode}{
+  Choose $S_0 \sim \text{Uniform}(\cS)$, $A_0 \sim \text{Uniform}(\cA)$ \upshape(exploring starts)\;
+  Generate episode $S_0, A_0, R_1, S_1, A_1, R_2, \dots, S_\tau$ following $\pi$ after step 0\;
+  $G \leftarrow 0$\;
+  \For{$t = \tau-1, \tau-2, \dots, 0$ \upshape(backward)}{
+    $G \leftarrow \gamma G + R_{t+1}$\;
+    \If{$(S_t, A_t)$ does not appear in $(S_0,A_0),\dots,(S_{t-1},A_{t-1})$}{
+      $\mathit{Count}(S_t, A_t) \leftarrow \mathit{Count}(S_t, A_t) + 1$\;
+      $Q(S_t, A_t) \leftarrow Q(S_t, A_t) + \frac{1}{\mathit{Count}(S_t,A_t)}\bigl(G - Q(S_t, A_t)\bigr)$\;
+      $\pi(S_t) \leftarrow \argmax_{a} Q(S_t, a)$\;
+    }
+  }
+}
+\end{algorithm}
+
+\paragraph{Convergence argument.}
+The algorithm performs a single step of policy improvement (line 11) after each return update.  Formally, convergence to an optimal policy $\pi^*$ follows from a fixed-point argument: if the algorithm converges, then at convergence $Q \approx Q^{\pi}$ (evaluation is consistent by Theorem~\ref{thm:fv-unbiased}) and $\pi$ is greedy with respect to $Q^{\pi}$.  A policy that is simultaneously greedy with respect to its own value function must be optimal (see the Policy Improvement Theorem, Chapter~\ref{ch:dp}).
+
+\paragraph{Why exploring starts is impractical.}  The assumption that each episode can start from any $(s, a)$ pair is artificial in most real-world tasks.  One cannot, for example, start a chess game with the king in an arbitrary position, or initialize a robot at an arbitrary joint angle while guaranteeing safety.  The exploration requirement must instead be built into the policy itself\,---\,which is the subject of the next two sections.
+
+
+% ===========================================================
+\section{On-Policy Monte Carlo Control}
+\label{sec:mc-on-policy}
+\index{Monte Carlo control!on-policy}
+
+On-policy MC control abandons exploring starts and instead ensures that every action is tried in every state by using a \emph{stochastic} policy that always assigns some minimum probability to each action.
+
+\begin{definition}[$\varepsilon$-soft policy]
+\label{def:eps-soft}
+\index{$\varepsilon$-soft policy}
+A policy $\pi$ is \textbf{$\varepsilon$-soft} if for all $s \in \cS$ and all $a \in \cA(s)$,
+\begin{equation}
+  \label{eq:eps-soft}
+  \pi(a \mid s) \ge \frac{\varepsilon}{|\cA(s)|}, \qquad \varepsilon > 0.
+\end{equation}
+\end{definition}
+
+Among all $\varepsilon$-soft policies, the natural improvement of a given $\varepsilon$-soft policy $\pi$ is the $\varepsilon$-greedy policy with respect to the current $Q$ estimate:
+\begin{equation}
+  \label{eq:eps-greedy-policy}
+  \pi'(a \mid s) = \begin{cases}
+    1 - \varepsilon + \dfrac{\varepsilon}{|\cA(s)|}, & a = \argmax_{b} Q(s, b), \\[6pt]
+    \dfrac{\varepsilon}{|\cA(s)|}, & \text{otherwise.}
+  \end{cases}
+\end{equation}
+
+\subsection*{$\varepsilon$-Soft Improvement Theorem}
+
+\begin{theorem}[$\varepsilon$-soft policy improvement]
+\label{thm:eps-soft-improvement}
+\index{$\varepsilon$-soft policy improvement theorem}
+Let $\pi$ be an $\varepsilon$-soft policy and let $\pi'$ be the $\varepsilon$-greedy policy defined by~\eqref{eq:eps-greedy-policy} with respect to $Q^\pi$.  Then $v^{\pi'}(s) \ge v^\pi(s)$ for all $s \in \cS$.
+\end{theorem}
+
+\begin{proof}
+Fix $s \in \cS$ and let $m = |\cA(s)|$.  Write $M = \max_{a \in \cA(s)} Q^\pi(s, a)$.
+
+Because $\pi$ is $\varepsilon$-soft, we can decompose it as
+\[
+  \pi(a \mid s) = \frac{\varepsilon}{m} + \delta_a, \quad \delta_a \ge 0, \quad \sum_a \delta_a = 1 - \varepsilon.
+\]
+Then, using the shorthand $v^\pi(s) = Q^\pi(s, \pi) := \sum_a \pi(a \mid s) Q^\pi(s, a)$,
+\begin{align}
+  v^\pi(s)
+  &= \sum_{a} \pi(a \mid s)\,Q^\pi(s, a) \notag \\
+  &= \frac{\varepsilon}{m} \sum_a Q^\pi(s, a) + \sum_a \delta_a\,Q^\pi(s, a) \notag \\
+  &\le \frac{\varepsilon}{m} \sum_a Q^\pi(s, a) + (1 - \varepsilon)\,M. \label{eq:eps-soft-ineq}
+\end{align}
+Now observe that the right-hand side of~\eqref{eq:eps-soft-ineq} is exactly
+\[
+  Q^\pi(s, \pi') = \sum_a \pi'(a \mid s)\,Q^\pi(s, a),
+\]
+because $\pi'$ places mass $1 - \varepsilon + \varepsilon/m$ on the maximising action(s) and $\varepsilon/m$ on all others.  Thus
+\[
+  Q^\pi(s, \pi') \ge v^\pi(s) = Q^\pi(s, \pi).
+\]
+This is precisely the condition of the Policy Improvement Theorem (Chapter~\ref{ch:dp}), which gives $v^{\pi'}(s) \ge v^\pi(s)$.
+\end{proof}
+
+\begin{remark}
+The inequality becomes an equality\,---\,and hence $\pi = \pi'$---only when $Q^\pi(s, a)$ is the same for all $a$ in every state, i.e.\ when $\pi$ is already optimal among all $\varepsilon$-soft policies.  This optimum is the \emph{$\varepsilon$-optimal}\index{$\varepsilon$-optimal policy} policy: the best achievable when forced to keep at least $\varepsilon/|\cA(s)|$ probability on each action.  It is not the globally optimal deterministic policy $\pi^*$ in general.  The gap shrinks as $\varepsilon \to 0$.
+\end{remark}
+
+\begin{algorithm}[ht]
+\caption{On-Policy First-Visit MC Control ($\varepsilon$-greedy)}
+\label{alg:on-policy-mc}
+\KwIn{Small $\varepsilon > 0$, discount $\gamma$}
+Initialise $Q(s,a) \leftarrow 0$, $\mathit{Count}(s,a) \leftarrow 0$ for all $s, a$\;
+$\pi \leftarrow \varepsilon$-greedy w.r.t.\ $Q$\;
+\For{each episode}{
+  Generate episode $S_0, A_0, R_1, \dots, S_\tau$ using $\pi$\;
+  $G \leftarrow 0$\;
+  \For{$t = \tau-1, \tau-2, \dots, 0$}{
+    $G \leftarrow \gamma G + R_{t+1}$\;
+    \If{$(S_t, A_t)$ first visit in episode}{
+      $\mathit{Count}(S_t, A_t) \leftarrow \mathit{Count}(S_t, A_t) + 1$\;
+      $Q(S_t, A_t) \leftarrow Q(S_t, A_t) + \frac{1}{\mathit{Count}(S_t,A_t)}\bigl(G - Q(S_t, A_t)\bigr)$\;
+    }
+  }
+  Update $\pi$ to be $\varepsilon$-greedy w.r.t.\ current $Q$\;
+}
+\end{algorithm}
+
+The $\varepsilon$-soft property guarantees that every $(s, a)$ pair is visited infinitely often, so the estimates $Q(s, a)$ converge to $Q^\pi$ by Theorem~\ref{thm:fv-unbiased}, and repeated application of Theorem~\ref{thm:eps-soft-improvement} drives the policy toward the $\varepsilon$-optimal policy.
+
+\paragraph{Convergence to $\varepsilon$-optimality.}  On-policy MC control converges to the best possible policy among all $\varepsilon$-soft policies.  This is weaker than convergence to the globally optimal $\pi^*$.  To recover $\pi^*$, one either uses exploring starts (Section~\ref{sec:mc-es}) or, more practically, the off-policy approach of Section~\ref{sec:mc-importance-sampling}, which allows the target policy to be deterministic while the behavior policy handles exploration.
+
+
+% ===========================================================
+\section{Off-Policy Monte Carlo via Importance Sampling}
+\label{sec:mc-importance-sampling}
+\index{off-policy Monte Carlo}\index{importance sampling}
+
+\subsection*{The Off-Policy Problem}
+
+In off-policy learning, data is collected by a \emph{behavior policy}\index{behavior policy} $\mu$ (which can explore freely), while we wish to estimate or improve a \emph{target policy}\index{target policy} $\pi$ (which may be deterministic and greedy).  The fundamental obstacle is that the episode distribution induced by $\mu$ differs from the distribution induced by $\pi$.  Naive averaging of returns would yield estimates of $Q^\mu$, not $Q^\pi$.
+
+\paragraph{Coverage assumption.}
+\index{coverage assumption}
+For off-policy estimation to be well posed, we require that $\pi$ cannot choose any action that $\mu$ would never choose:
+\begin{equation}
+  \label{eq:coverage}
+  \pi(a \mid s) > 0 \implies \mu(a \mid s) > 0, \quad \forall\, s \in \cS,\; a \in \cA.
+\end{equation}
+Without~\eqref{eq:coverage}, certain trajectories required by $\pi$ would have zero probability under $\mu$ and could never appear in the data.
+
+\subsection*{Importance Sampling Ratio}
+
+The key tool is the \emph{importance sampling ratio}\index{importance sampling ratio}, which reweights the probability of observing a particular trajectory under $\mu$ to the probability of observing it under $\pi$.  For a trajectory segment $(S_t, A_t, \dots, S_T)$ generated by $\mu$, the ratio of the trajectory probability under $\pi$ to that under $\mu$ is
+\begin{equation}
+  \label{eq:is-ratio}
+  \rho_{t:T-1} = \prod_{k=t}^{T-1} \frac{\pi(A_k \mid S_k)}{\mu(A_k \mid S_k)}.
+\end{equation}
+The environment transitions $p(s', r \mid s, a)$ cancel in this ratio because they are the same under both policies.
+
+\subsection*{Ordinary Importance Sampling (OIS)}
+
+\begin{definition}[Ordinary importance sampling estimator]
+\label{def:ois}
+Given $n$ episodes with returns $G_0^{(1)}, \dots, G_0^{(n)}$ and corresponding IS weights $\rho^{(1)}, \dots, \rho^{(n)}$, the \textbf{ordinary importance sampling} (OIS) estimator of $Q^\pi(s, a)$ is
+\begin{equation}
+  \label{eq:ois-estimator}
+  \widehat{Q}_n^{\,\mathrm{OIS}}(s, a) = \frac{1}{n} \sum_{i=1}^{n} \rho^{(i)} G_0^{(i)}.
+\end{equation}
+\end{definition}
+
+\begin{theorem}[OIS is unbiased]
+\label{thm:ois-unbiased}
+Under the coverage assumption~\eqref{eq:coverage},
+\[
+  \E_\mu\!\left[\rho_{0:T-1}\,G_0 \mid S_0 = s,\; A_0 = a\right] = Q^\pi(s, a).
+\]
+\end{theorem}
+
+\begin{proof}
+Denote a tail trajectory by $h = (s_1, a_1, r_2, \dots, s_\tau)$.  Then
+\[
+  Q^\pi(s, a) = \sum_{h} \Prob_\pi(h \mid s, a)\,G(h),
+\]
+where $G(h) = \sum_{k} \gamma^k r_{k+1}$.  Under $\mu$,
+\[
+  \Prob_\mu(h \mid s, a) = \prod_{k=1}^{\tau-1} \mu(a_k \mid s_k)\,p(s_{k+1}, r_{k+1} \mid s_k, a_k).
+\]
+By definition of $\rho$,
+\[
+  \rho(h)\,\Prob_\mu(h \mid s, a)
+  = \prod_{k=1}^{\tau-1} \pi(a_k \mid s_k)\,p(s_{k+1}, r_{k+1} \mid s_k, a_k)
+  = \Prob_\pi(h \mid s, a).
+\]
+Therefore,
+\begin{align*}
+  \E_\mu[\rho\,G_0 \mid S_0 = s, A_0 = a]
+  &= \sum_h \rho(h)\,G(h)\,\Prob_\mu(h \mid s, a) \\
+  &= \sum_h G(h)\,\Prob_\pi(h \mid s, a)
+  = Q^\pi(s, a). \qedhere
+\end{align*}
+\end{proof}
+
+\subsection*{Weighted Importance Sampling (WIS)}
+
+\begin{definition}[Weighted importance sampling estimator]
+\label{def:wis}
+The \textbf{weighted importance sampling} (WIS) estimator is
+\begin{equation}
+  \label{eq:wis-estimator}
+  \widehat{Q}_n^{\,\mathrm{WIS}}(s, a) = \frac{\sum_{i=1}^n \rho^{(i)}\,G_0^{(i)}}{\sum_{i=1}^n \rho^{(i)}},
+\end{equation}
+whenever the denominator is positive.
+\end{definition}
+
+WIS is a ratio estimator.  It is biased for finite $n$ (since $\E[\sum \rho G / \sum \rho] \ne \E[\sum \rho G]/\E[\sum \rho]$), but asymptotically unbiased and consistent by the same ratio-limit argument as Theorem~\ref{thm:ev-consistent}.  Crucially, WIS has dramatically lower variance than OIS:
+
+\begin{proposition}
+Let $\rho$ be the IS weight for a single episode.  For any single episode,
+\[
+  \Var_\mu\!\left[\rho G\right] \ge \Var_\mu\!\left[\,\widehat{Q}^{\,\mathrm{WIS}}_1\,\right]
+\]
+(in the sense that WIS normalises the weight so its squared expectation is bounded).  In particular, if $\pi = \mu$, then $\rho \equiv 1$ and both estimators reduce to the on-policy sample mean with no increase in variance.
+\end{proposition}
+
+The intuition is that OIS can produce IS weights $\rho \gg 1$ when $\pi$ strongly prefers certain actions that $\mu$ rarely takes.  WIS self-normalises and clips the effective weights.
+
+\subsection*{Worked Example: Off-Policy Estimation with Numbers}
+
+\begin{example}[Off-policy MC estimation]
+\label{ex:offpolicy-numerical}
+\index{off-policy Monte Carlo!numerical example}
+Consider a simple two-state episodic MDP.  The single non-terminal state is $s$, with two actions $\{a_1, a_2\}$.  A single step from $s$ leads to the terminal state $\mathrm{T}$ with reward $r$.
+
+\medskip
+\noindent
+\textbf{Policies:}
+\begin{itemize}[leftmargin=*]
+  \item Behavior: $\mu(a_1 \mid s) = 0.5$, $\mu(a_2 \mid s) = 0.5$.
+  \item Target: $\pi(a_1 \mid s) = 0.8$, $\pi(a_2 \mid s) = 0.2$.
+\end{itemize}
+\textbf{Rewards:} action $a_1$ always yields $r=+2$; action $a_2$ always yields $r=+1$.
+
+\medskip
+\noindent
+The true target values are:
+\[
+  Q^\pi(s, a_1) = 2, \quad Q^\pi(s, a_2) = 1.
+\]
+
+\noindent
+Suppose we observe three episodes under $\mu$:
+\begin{center}
+\begin{tabular}{@{}cccc@{}}
+\toprule
+Episode $i$ & Action taken & Return $G^{(i)}$ & IS weight $\rho^{(i)} = \pi(A^{(i)}\mid s)/\mu(A^{(i)}\mid s)$ \\
+\midrule
+1 & $a_1$ & $2$ & $0.8/0.5 = 1.6$ \\
+2 & $a_2$ & $1$ & $0.2/0.5 = 0.4$ \\
+3 & $a_1$ & $2$ & $0.8/0.5 = 1.6$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+\textbf{Ordinary IS estimate} for $v^\pi(s) = \E_\pi[G \mid S_0 = s] = 0.8 \times 2 + 0.2 \times 1 = 1.8$:
+\[
+  \widehat{v}^{\,\mathrm{OIS}}_3 = \frac{1}{3}(1.6 \times 2 + 0.4 \times 1 + 1.6 \times 2) = \frac{1}{3}(3.2 + 0.4 + 3.2) = \frac{6.8}{3} \approx 2.27.
+\]
+
+\noindent
+\textbf{Weighted IS estimate}:
+\[
+  \widehat{v}^{\,\mathrm{WIS}}_3 = \frac{1.6 \times 2 + 0.4 \times 1 + 1.6 \times 2}{1.6 + 0.4 + 1.6} = \frac{6.8}{3.6} \approx 1.89.
+\]
+
+\noindent
+With only 3 episodes, WIS is closer to the true value $1.8$ in this instance.  Both estimators converge to $1.8$ as $n \to \infty$.  The OIS deviation of $2.27 - 1.8 = 0.47$ is due to the unlucky overrepresentation of $a_1$; WIS compensates by normalising the weights.
+\end{example}
+
+\subsection*{Incremental Off-Policy Implementation}
+
+For WIS, the incremental update requires maintaining both the numerator sum and the denominator sum.  Let $C_n = \sum_{i=1}^n \rho^{(i)}$ be the cumulative weight.  After episode $n+1$:
+\begin{align}
+  C_{n+1} &\leftarrow C_n + \rho^{(n+1)}, \label{eq:wis-C-update} \\
+  Q_{n+1}(s,a) &\leftarrow Q_n(s,a) + \frac{\rho^{(n+1)}}{C_{n+1}}\bigl(G^{(n+1)} - Q_n(s,a)\bigr). \label{eq:wis-Q-update}
+\end{align}
+Equations~\eqref{eq:wis-C-update}--\eqref{eq:wis-Q-update} process one episode at a time and require $O(|\cS||\cA|)$ memory.
+
+
+% ===========================================================
+\section{Bias--Variance Trade-off in Monte Carlo}
+\label{sec:mc-bias-variance}
+\index{bias--variance trade-off!Monte Carlo}
+
+\subsection*{Bias}
+
+Monte Carlo estimators are \emph{unbiased} (first-visit) or \emph{asymptotically unbiased} (every-visit, WIS).  This is a significant advantage over bootstrap methods such as temporal-difference learning, which introduces bias through its bootstrapping target $R + \gamma V(S')$.  The MC estimate uses the actual observed return $G_t$, which is an unbiased sample of $v^\pi(s)$ by definition.
+
+\subsection*{Variance}
+
+Despite their unbiasedness, MC estimators can have high variance, especially:
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Long episodes.}  The return $G_t = \sum_{k=0}^{\tau-t-1}\gamma^k R_{t+k+1}$ accumulates many stochastic rewards.  If the episode length is $L$, the variance of $G_t$ can grow as $O(L \cdot \sigma_R^2)$ for $\gamma = 1$ (where $\sigma_R^2$ is the per-step reward variance).
+
+  \item \textbf{Off-policy IS weights.}  As noted in Section~\ref{sec:mc-importance-sampling}, the OIS weight $\rho = \prod_{k} \pi(A_k \mid S_k)/\mu(A_k \mid S_k)$ is a product of $\tau$ terms.  Even if each factor is close to 1, the product can be exponentially variable in the episode length.  WIS reduces this, but at the cost of introducing bias.
+
+  \item \textbf{Rare visits.}  If state $s$ is visited infrequently, the effective sample size is small and the variance of the MC estimate is large.
+\end{itemize}
+
+\subsection*{Comparison Table}
+
+\begin{table}[ht]
+\centering
+\caption{Summary of Monte Carlo estimators.  ``a.u.\ = asymptotically unbiased''.}
+\label{tab:mc-comparison}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Method & Bias & Variance & Practical & Note \\
+\midrule
+First-visit MC (on-policy)  & None     & Moderate      & Yes  & i.i.d.\ returns \\
+Every-visit MC (on-policy)  & a.u.     & Lower (more data) & Yes  & Ratio estimator \\
+OIS (off-policy)            & None     & High          & Sometimes & Product weights \\
+WIS (off-policy)            & a.u.     & Lower         & Yes  & Self-normalised \\
+DP policy evaluation        & None     & Zero (deterministic) & Model needed & Full sweep \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{The Fundamental Tension}
+
+The bias--variance trade-off in MC methods can be summarised as follows.  \emph{Any} method that uses only actual observed returns avoids bias but accumulates variance over the full episode length.  Methods that bootstrap (e.g.\ TD) reduce variance by using a one-step estimate, but introduce bias from the approximate value function.  This tension between MC and TD methods is a central theme of the field, and Chapter~\ref{ch:td} will explore it in depth through the lens of the TD($\lambda$) family, which interpolates continuously between the two extremes.
+
+
+% ===========================================================
+\section{Summary}
+\label{sec:mc-summary}
+
+Monte Carlo methods constitute the first genuinely model-free approach to RL value estimation and control.  Their key properties are:
+
+\begin{description}[leftmargin=!, labelwidth=3.5cm]
+  \item[No model required.]  Episodes are used directly; transition probabilities are never needed.
+  \item[Unbiased estimates.]  First-visit MC is unbiased; every-visit and WIS are asymptotically unbiased.
+  \item[Complete episodes.]  Unlike TD, MC must wait until episode termination before updating.  This limits applicability to episodic tasks and makes MC unsuitable for very long or non-terminating episodes.
+  \item[High variance.]  Returns aggregate many random rewards; IS weights amplify variance off-policy.
+  \item[On/off-policy split.]  On-policy methods (with $\varepsilon$-soft policies) are simpler and lower-variance; off-policy methods (with IS) are more flexible but higher-variance.
+  \item[GPI framework.]  MC control is a sample-based instantiation of the evaluation--improvement cycle of Chapter~\ref{ch:dp}.
+\end{description}
+
+A brief historical note: Monte Carlo simulation was systematized by Stanislaw Ulam and John von Neumann in the 1940s as part of the Manhattan Project.  Its application to RL was developed by Barto and Sutton in the 1990s, drawing on earlier work in adaptive control.  The importance sampling connection was clarified in the foundational Sutton--Barto textbook and in the work of Precup, Sutton, and Singh (2000) on eligibility traces in the off-policy setting.
+
+\textbf{Preview of TD methods.}  Chapter~\ref{ch:td} introduces temporal-difference learning, which updates value estimates after each step rather than waiting for an episode to end.  TD methods bootstrap from current estimates, introducing bias but dramatically reducing variance.  The TD--MC spectrum is controlled by the $\lambda$ parameter in TD($\lambda$), which continuously interpolates between single-step TD ($\lambda = 0$) and full MC ($\lambda = 1$).
+
+
+% ===========================================================
+\section*{Exercises}
+\addcontentsline{toc}{section}{Exercises}
+
+\begin{exercise}
+\label{ex:mc-fv-bias-variance}
+Let $G_1^{\mathrm{FV}}(s), \dots, G_n^{\mathrm{FV}}(s)$ be the first-visit returns for state $s$ collected across $n$ episodes.  Assume each return has mean $v^\pi(s)$ and variance $\sigma_s^2 < \infty$.
+\begin{enumerate}[label=(\alph*)]
+  \item Show that $\widehat{v}_n^{\,\mathrm{FV}}(s)$ is unbiased.
+  \item Compute $\Var\!\left[\widehat{v}_n^{\,\mathrm{FV}}(s)\right]$.
+  \item How many episodes are needed to guarantee $\Var\!\left[\widehat{v}_n^{\,\mathrm{FV}}(s)\right] \le 0.01\,\sigma_s^2$?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:mc-ev-bias}
+Show by a concrete two-state example that the every-visit MC estimator $\widehat{v}_1^{\,\mathrm{EV}}(s)$ is biased when computed from a single episode.  \emph{Hint}: Construct a loop: $s \to s \to \mathrm{T}$ with rewards $1$ and $0$, and show that the single-episode EV estimator does not equal $v^\pi(s)$.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:mc-incremental}
+Derive~\eqref{eq:mc-incremental} from the formula for the running sample mean.  That is, starting from $V_n = \frac{1}{n}\sum_{i=1}^n G_i$, show algebraically that $V_{n+1} = V_n + \frac{1}{n+1}(G_{n+1} - V_n)$.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:mc-blackjack}
+In the Blackjack example of Section~\ref{sec:mc-blackjack}, the state is $(x, d, a)$ with $x \in \{12,\dots,21\}$.
+\begin{enumerate}[label=(\alph*)]
+  \item Why do we restrict to $x \ge 12$?  What happens for sums below 12?
+  \item Why does on-policy MC produce consistent estimates for all $200$ states even though the simple policy (``stick on 20 or 21'') never voluntarily takes certain actions?
+  \item Estimate informally the value $v^\pi(20, \text{dealer shows 6}, \text{no usable ace})$ and justify your estimate.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:mc-exploring-starts}
+In Algorithm~\ref{alg:mc-es}, the policy update (line 11) is applied only on the first visit to $(S_t, A_t)$ in each episode.  Suppose instead we always update $Q$ and $\pi$ for every visit (including repeated ones).  Does the algorithm still converge?  What changes in the convergence argument?
+\end{exercise}
+
+\begin{exercise}
+\label{ex:mc-eps-soft-equality}
+In the proof of Theorem~\ref{thm:eps-soft-improvement}, the inequality~\eqref{eq:eps-soft-ineq} becomes an equality.  Characterize precisely when this equality holds, and explain why at equality the policy $\pi$ is $\varepsilon$-optimal.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:mc-ois-variance}
+Let $X = \rho G$ be a single OIS-weighted return.  Show that
+\[
+  \Var_\mu[\rho G] = \E_\mu[\rho^2 G^2] - (Q^\pi(s,a))^2.
+\]
+Argue why $\E_\mu[\rho^2 G^2]$ can be very large when $\pi$ and $\mu$ differ substantially.  How does this motivate WIS?
+\end{exercise}
+
+\begin{exercise}
+\label{ex:mc-is-reduction}
+Prove that if $\pi = \mu$, then $\rho_{t:T-1} = 1$ for every episode, and both the OIS and WIS estimators reduce to the standard on-policy Monte Carlo average.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:mc-wis-bias}
+Show that the WIS estimator $\widehat{Q}_1^{\,\mathrm{WIS}}(s,a)$ computed from a single episode satisfies $\widehat{Q}_1^{\,\mathrm{WIS}}(s,a) = G_0^{(1)}$, regardless of the IS weight $\rho^{(1)}$.  Conclude that with a single episode, WIS is not unbiased in general.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:mc-td-comparison}
+Consider a $5$-step episodic MDP where the only reward is $+1$ at the final step and $0$ elsewhere.  The discount is $\gamma = 1$.  The policy is fixed and deterministic.
+\begin{enumerate}[label=(\alph*)]
+  \item What is the MC return $G_t$ for each time step $t = 0, 1, 2, 3, 4$?
+  \item If we run first-visit MC for $1000$ episodes, what does the estimate $V(s_0)$ converge to?
+  \item Explain qualitatively why the variance of $G_0$ is higher than the variance of $G_4$.  Under what condition would they be equal?
+\end{enumerate}
+\end{exercise}

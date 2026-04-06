@@ -1,0 +1,716 @@
+\chapter[Language Models and Post-Training]{Language Models and Post-Training}
+\label{ch:lm-post-training}
+
+\begin{quote}
+\itshape
+The bitter lesson of sixty years of AI research is that general methods that leverage computation are ultimately the most effective. Language models are the purest expression of that lesson yet discovered.
+\end{quote}
+
+\bigskip
+
+The preceding ten chapters built the machinery of reinforcement learning from first principles: Markov decision processes, dynamic programming, Monte Carlo and temporal-difference methods, function approximation, policy gradients, and actor-critic algorithms. Chapter~\ref{ch:reward-models} extended this machinery to the problem of learning a reward signal from human preference data. All of this apparatus was, in a sense, prologue. The chapters that follow\,---\,on proximal policy optimisation for language models, on direct preference optimisation, on group relative policy optimisation\,---\,apply RL to one of the most consequential computational artefacts of our era: the large language model.
+
+Before those applications can be developed precisely, the reader needs a working understanding of what a language model is, how it is built, and why RL is the right tool for the final stages of its training. This chapter provides that foundation. It is not a comprehensive survey of natural language processing\,---\,several excellent textbooks exist for that purpose\,---\,but rather a self-contained bridge between the RL theory of Part~II and the RLHF methods of Part~III.
+
+We begin with the Transformer architecture (Section~\ref{sec:transformer}), the neural backbone underlying every modern language model, and then formalise autoregressive language modelling as a statistical problem (Section~\ref{sec:autoregressive-lm}). Section~\ref{sec:lm-mdp} provides the crucial conceptual link: language generation is a Markov decision process, and the language model itself is a policy. Armed with this correspondence, Sections~\ref{sec:pretraining}--\ref{sec:post-training-pipeline} describe the three-stage training recipe used in practice: massive pre-training, supervised fine-tuning, and alignment via reinforcement learning. Section~\ref{sec:synthetic-data} treats the growing role of synthetic data, which has become indispensable at every stage of post-training. Section~\ref{sec:lm-eval} covers evaluation methodology, and Section~\ref{sec:lm-summary} situates this chapter within the larger arc of the book.
+
+% ===========================================================
+\section{The Transformer Architecture}
+\label{sec:transformer}
+\index{Transformer architecture}
+
+Modern large language models are almost universally implemented using the Transformer architecture introduced by Vaswani et al.\ (2017). Understanding the Transformer at a conceptual level\,---\,without delving into the full details of an NLP textbook\,---\,is sufficient for the RL treatment that follows. We describe the four essential components: self-attention, positional encoding, feed-forward blocks, and layer normalisation.
+
+\subsection{Self-Attention}
+\index{self-attention}
+
+The central innovation of the Transformer is the \textbf{self-attention} mechanism, which allows every position in a sequence to directly attend to every other position. Given a sequence of $n$ token representations $\mathbf{x}_1, \ldots, \mathbf{x}_n \in \R^d$, packed into a matrix $X \in \R^{n \times d}$, the scaled dot-product attention computes
+
+\begin{equation}
+\label{eq:self-attention}
+\operatorname{Attention}(Q, K, V) = \operatorname{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}\right) V,
+\end{equation}
+
+where $Q = XW_Q$, $K = XW_K$, $V = XW_V$ are the query, key, and value projections, with learned weight matrices $W_Q, W_K, W_V \in \R^{d \times d_k}$. The division by $\sqrt{d_k}$ prevents the dot products from growing so large that the softmax saturates.
+
+Intuitively, each query vector $\mathbf{q}_i$ is compared against all key vectors $\mathbf{k}_j$ to produce an attention score, which is then used to form a weighted average of the value vectors. A token representing the word ``it'' can attend strongly to the earlier noun it refers to, regardless of the distance between them. This unlimited receptive field,\,---\,in contrast to the local windows of convolutional networks or the sequential bottleneck of recurrent networks,\,---\,is what makes the Transformer so powerful for language.
+
+In practice, $h$ attention heads are computed in parallel and concatenated:
+\[
+\operatorname{MultiHead}(X) = \operatorname{Concat}(\mathrm{head}_1, \ldots, \mathrm{head}_h)\,W_O,
+\]
+where each $\mathrm{head}_i = \operatorname{Attention}(XW_{Q,i}, XW_{K,i}, XW_{V,i})$ and $W_O \in \R^{hd_k \times d}$. Multiple heads allow the model to attend to different aspects of the context simultaneously: one head might capture syntactic agreement, another coreference, another semantic similarity.
+
+\subsection{Positional Encoding}
+\index{positional encoding}
+
+Self-attention is \emph{permutation-equivariant}: if the token positions are shuffled, the attention scores shuffle identically, and the model cannot distinguish ``the cat sat on the mat'' from any permutation thereof. Positional information must therefore be injected explicitly.
+
+The original Transformer used fixed sinusoidal encodings added to the token embeddings. Modern models generally prefer \textbf{rotary position embeddings} (RoPE; Su et al., 2021) or \textbf{ALiBi} (Press et al., 2022), which encode relative rather than absolute positions and generalise better to sequence lengths not seen during training. For our purposes it suffices to know that after positional encoding, the model has access to the order of tokens.
+
+\subsection{Feed-Forward Blocks and Layer Normalisation}
+\index{feed-forward block}\index{layer normalisation}
+
+Each Transformer \emph{layer} consists of a self-attention sublayer followed by a position-wise feed-forward sublayer. The feed-forward block applies two linear transformations with a nonlinearity between them:
+\[
+\operatorname{FFN}(\mathbf{x}) = W_2\,\sigma(W_1 \mathbf{x} + \mathbf{b}_1) + \mathbf{b}_2,
+\]
+where $\sigma$ is typically the GELU activation function. The inner dimension is usually four times the model dimension: $W_1 \in \R^{4d \times d}$, $W_2 \in \R^{d \times 4d}$.
+
+\textbf{Layer normalisation} (LayerNorm; Ba et al., 2016) is applied before each sublayer (the \emph{pre-norm} variant used in most modern models):
+\[
+\operatorname{LayerNorm}(\mathbf{x}) = \frac{\mathbf{x} - \mu}{\sigma + \epsilon} \odot \boldsymbol{\gamma} + \boldsymbol{\beta},
+\]
+where $\mu$ and $\sigma$ are the mean and standard deviation computed over the feature dimension, and $\boldsymbol{\gamma}, \boldsymbol{\beta}$ are learned scale and shift parameters. LayerNorm stabilises training by preventing activations from growing uncontrollably across layers.
+
+A residual connection wraps each sublayer, so the full computation in one Transformer layer is:
+\begin{align*}
+\mathbf{h}^{(l)} &= \mathbf{h}^{(l-1)} + \operatorname{MultiHead}(\operatorname{LayerNorm}(\mathbf{h}^{(l-1)})),\\
+\mathbf{h}^{(l+1)} &= \mathbf{h}^{(l)} + \operatorname{FFN}(\operatorname{LayerNorm}(\mathbf{h}^{(l)})).
+\end{align*}
+Stacking $L$ such layers and projecting the top-layer representation onto the vocabulary yields the model's output distribution. Figure~\ref{fig:transformer-block} illustrates one such layer.
+
+\begin{figure}[ht]
+\centering
+% Clean vertical Transformer layer: main flow left, residual bypasses on the right
+\begin{tikzpicture}[
+  node distance=0.55cm,
+  box/.style={draw, rounded corners=3pt, minimum width=3.4cm, minimum height=0.65cm,
+              fill=blue!8, font=\small, align=center},
+  add/.style={draw, circle, minimum size=0.55cm, fill=orange!20, font=\small,
+              inner sep=0pt},
+  arr/.style={-{Stealth[length=5pt]}, thick},
+  lbl/.style={font=\footnotesize\itshape}
+]
+
+% ---- Main vertical flow ----
+\node[lbl]                       (in)  {$\mathbf{h}^{(l-1)}$};
+\node[box,  below=0.45cm of in]  (ln1) {LayerNorm};
+\node[box,  below=0.55cm of ln1] (mha) {Multi-Head Self-Attention};
+\node[add,  below=0.55cm of mha] (a1)  {$+$};
+\node[box,  below=0.55cm of a1]  (ln2) {LayerNorm};
+\node[box,  below=0.55cm of ln2] (ffn) {Feed-Forward (FFN)};
+\node[add,  below=0.55cm of ffn] (a2)  {$+$};
+\node[lbl,  below=0.45cm of a2]  (out) {$\mathbf{h}^{(l)}$};
+
+% ---- Main-flow arrows ----
+\draw[arr] (in)  -- (ln1);
+\draw[arr] (ln1) -- (mha);
+\draw[arr] (mha) -- (a1);
+\draw[arr] (a1)  -- (ln2);
+\draw[arr] (ln2) -- (ffn);
+\draw[arr] (ffn) -- (a2);
+\draw[arr] (a2)  -- (out);
+
+% ---- Residual bypass 1: input -> a1 (bypasses LayerNorm + MHA) ----
+% Route: exit right of 'in', go down along right rail, enter right of a1
+\draw[arr, rounded corners=4pt]
+  (in.east)   -- ++(0.9,0)
+              -- ++(0,-3.33)
+              -- (a1.east);
+
+% ---- Residual bypass 2: a1 output -> a2 (bypasses LayerNorm + FFN) ----
+% Route: exit right of a1, go down along right rail, enter right of a2
+\draw[arr, rounded corners=4pt]
+  (a1.east)   -- ++(0.9,0)
+              -- ++(0,-3.50)
+              -- (a2.east);
+
+% ---- Bypass labels ----
+\node[lbl, right=1.0cm of a1] {skip};
+\node[lbl, right=1.0cm of a2] {skip};
+
+\end{tikzpicture}
+\caption{One Transformer decoder layer. The input representation $\mathbf{h}^{(l-1)}$ passes through layer normalisation before multi-head self-attention and again before the feed-forward block. Residual connections (the $+$ nodes) allow gradients to flow directly from output to input, enabling deep networks to train stably.}
+\label{fig:transformer-block}
+\end{figure}
+
+\begin{remark}
+For language modelling specifically, the Transformer uses a \emph{decoder-only} architecture with \textbf{causal masking}\index{causal masking}: during self-attention, position $i$ is prevented from attending to positions $j > i$. This ensures that the prediction of token $t$ depends only on tokens $1, \ldots, t-1$, preserving the autoregressive structure. The mask is implemented by setting $QK^\top_{ij} = -\infty$ for $j > i$ before applying softmax, which sends the corresponding attention weight to zero.
+\end{remark}
+
+The scale of modern Transformers is staggering: GPT-3 has 175 billion parameters across 96 layers; LLaMA~3 70B has 80 layers with a hidden dimension of 8192. Despite their scale, all of these models share the same four components described above.
+
+% ===========================================================
+\section{Autoregressive Language Modelling}
+\label{sec:autoregressive-lm}
+\index{autoregressive language modelling}
+
+A \textbf{language model} is a probability distribution over sequences of tokens. Let $\mathcal{V}$ denote the \textbf{vocabulary}\index{vocabulary}, a finite set of $|\mathcal{V}|$ tokens, typically between 32{,}000 and 128{,}000 entries after byte-pair encoding (BPE; Sennrich et al., 2016). A sequence of tokens $\mathbf{w} = (w_1, w_2, \ldots, w_T)$ with $w_t \in \mathcal{V}$ might represent a sentence, a document, a conversation, or a fragment of computer code.
+
+\begin{definition}[Autoregressive Language Model]
+\label{def:autoregressive-lm}
+\index{autoregressive language model}
+An \textbf{autoregressive language model} with parameters $\theta$ is a parametrised distribution over token sequences defined by the chain rule of probability:
+\begin{equation}
+\label{eq:lm-chain-rule}
+p_\theta(w_1, \ldots, w_T) = \prod_{t=1}^{T} p_\theta(w_t \mid w_1, \ldots, w_{t-1}),
+\end{equation}
+where each factor $p_\theta(w_t \mid w_{1:t-1})$ is a distribution over $\mathcal{V}$ computed from the context $(w_1, \ldots, w_{t-1})$.
+\end{definition}
+
+The factorisation~\eqref{eq:lm-chain-rule} is exact by the chain rule and introduces no approximation. The Transformer implements each conditional $p_\theta(w_t \mid w_{1:t-1})$ by mapping the context to a vector of \textbf{logits}\index{logits} $\mathbf{z}_t \in \R^{|\mathcal{V}|}$ and applying the softmax:
+\begin{equation}
+\label{eq:lm-softmax}
+p_\theta(w_t \mid w_{1:t-1}) = \operatorname{softmax}\!\left(\mathbf{z}_t / \tau\right),
+\end{equation}
+where $\tau > 0$ is the \textbf{temperature}\index{temperature} parameter. At $\tau = 1$ (default), the model samples proportionally to the softmax probabilities. At $\tau \to 0$, the distribution concentrates on the single highest-probability token (greedy decoding). Temperatures above 1 flatten the distribution, increasing diversity at the cost of coherence.
+
+\subsection{Training Objective: Cross-Entropy Loss}
+\index{cross-entropy loss!language modelling}
+
+Given a corpus of $N$ documents, where document $i$ has tokens $(w_1^{(i)}, \ldots, w_{T_i}^{(i)})$, the training objective is \textbf{next-token prediction}: minimise the average negative log-likelihood
+
+\begin{equation}
+\label{eq:ntp-loss}
+\mathcal{L}_{\mathrm{NTP}}(\theta) = -\frac{1}{\sum_i T_i}\sum_{i=1}^{N}\sum_{t=1}^{T_i} \log p_\theta\!\left(w_t^{(i)} \mid w_{1:t-1}^{(i)}\right).
+\end{equation}
+
+This is the cross-entropy between the empirical data distribution and the model's predicted distribution. Because the true next token is always a one-hot vector over $\mathcal{V}$, the cross-entropy collapses to the negative log-probability of the correct token. Equivalently, minimising~\eqref{eq:ntp-loss} maximises the joint probability the model assigns to the training corpus.
+
+\begin{definition}[Perplexity]
+\label{def:perplexity}
+\index{perplexity}
+The \textbf{perplexity} of a language model $p_\theta$ on a test sequence $(w_1, \ldots, w_T)$ is
+\begin{equation}
+\label{eq:perplexity}
+\mathrm{PPL}(\theta) = \exp\!\left(-\frac{1}{T}\sum_{t=1}^{T}\log p_\theta(w_t \mid w_{1:t-1})\right) = \exp(\mathcal{L}_{\mathrm{NTP}}).
+\end{equation}
+Perplexity is the geometric mean of the inverse probability the model assigns to each token. A perplexity of~$k$ means the model is on average as uncertain as if it had to choose uniformly among $k$ equally likely tokens. State-of-the-art large language models achieve perplexities below 10 on standard benchmarks, compared to a random baseline of $|\mathcal{V}| \approx 50{,}000$.
+\end{definition}
+
+\subsection{Scaling Laws}
+\index{scaling laws}
+
+One of the most practically important empirical discoveries in language modelling is that performance (measured by validation loss) follows predictable \textbf{scaling laws} as a function of model size $N$, dataset size $D$, and compute budget $C \approx 6ND$. Kaplan et al.\ (2020) established that validation loss decreases as a power law in each of these quantities independently. Hoffmann et al.\ (2022)\,---\,in what is now known as the \textbf{Chinchilla scaling laws}\index{Chinchilla scaling laws}\,---\,showed that previous large models (including GPT-3) were significantly undertrained relative to their size: compute-optimal training requires roughly 20 tokens per model parameter. The Chinchilla result implies that a model with $N$ parameters should be trained on approximately $20N$ tokens to minimise the loss for a given compute budget. This insight has reshaped how frontier models are designed: LLaMA~3 8B, for instance, was trained on 15 trillion tokens\,---\,far more than the Chinchilla-optimal amount, reflecting the practical importance of inference efficiency over training efficiency.
+
+% ===========================================================
+\section{Language Generation as a Markov Decision Process}
+\label{sec:lm-mdp}
+\index{language model!as MDP}
+
+The autoregressive generation process described above has an elegant interpretation as a Markov decision process. This correspondence is the conceptual foundation of every RLHF algorithm in Part~III: once we recognise the language model as a policy, all of the RL machinery developed in Chapters~\ref{ch:pg} and~\ref{ch:actor-critic} applies directly.
+
+\begin{definition}[Token-Level MDP]
+\label{def:token-mdp}
+\index{token-level MDP}
+Let $x = (x_1, \ldots, x_m)$ denote the \textbf{prompt}\index{prompt} (a sequence of $m$ tokens) and $y = (y_1, \ldots, y_T)$ the \textbf{response}\index{response} to be generated, with $y_t \in \mathcal{V}$. The \textbf{token-level MDP} is the tuple $\mathcal{M} = (\cS, \cA, P, R, \gamma)$ where:
+\begin{itemize}[leftmargin=*]
+  \item \textbf{State space} $\cS$: the state at step $t$ is the full context seen so far,
+  \[
+  s_t = (x_1, \ldots, x_m, y_1, \ldots, y_{t-1}),
+  \]
+  that is, the concatenation of the prompt and all tokens generated up to but not including step $t$. The initial state is $s_0 = x$.
+  \item \textbf{Action space} $\cA = \mathcal{V}$: the action at step $t$ is the next token $a_t = y_t$. The action space has cardinality $|\mathcal{V}| \sim 10^4$--$10^5$.
+  \item \textbf{Transition dynamics} $P$: deterministic,
+  \[
+  s_{t+1} = (x, y_1, \ldots, y_t) = s_t \concat y_t,
+  \]
+  where $\concat$ denotes concatenation. The transition is completely determined by the current state and action.
+  \item \textbf{Reward function} $R$: sparse and terminal,
+  \[
+  R(s_t, a_t) = \begin{cases} r(x, y) & \text{if } a_t = \textsc{eos} \text{ or } t = T, \\ 0 & \text{otherwise,} \end{cases}
+  \]
+  where $r : \mathcal{X} \times \mathcal{Y} \to \R$ is a scalar evaluation of the complete response (e.g., a learned reward model or a verifiable correctness score), and \textsc{eos} is the end-of-sequence token.
+  \item \textbf{Discount factor} $\gamma = 1$ (episodic task with a single terminal reward).
+  \item \textbf{Policy} $\pi_\theta$: the language model itself,
+  \[
+  \pi_\theta(a_t \mid s_t) = p_\theta(y_t \mid x, y_{1:t-1}).
+  \]
+\end{itemize}
+\end{definition}
+
+\begin{proposition}
+\label{prop:lm-return}
+The total return in the token-level MDP with $\gamma = 1$ equals the reward assigned to the complete response:
+\begin{equation}
+\label{eq:lm-return}
+G_0 = \sum_{t=0}^{T} R(s_t, a_t) = r(x, y).
+\end{equation}
+Consequently, the RLHF objective
+\begin{equation}
+\label{eq:rlhf-objective}
+J(\theta) = \E_{x \sim \mathcal{D},\; y \sim \pi_\theta(\cdot \mid x)}\bigl[r(x, y)\bigr]
+\end{equation}
+is precisely the expected return of the policy $\pi_\theta$ in the token-level MDP.
+\end{proposition}
+
+\begin{proof}
+All intermediate rewards are zero by definition; the only nonzero term in the sum is $R(s_T, a_T) = r(x, y)$. Taking the expectation under $x \sim \mathcal{D}$ and the trajectory distribution induced by $\pi_\theta$ gives~\eqref{eq:rlhf-objective} directly from the definition of expected return.
+\end{proof}
+
+This MDP formulation reveals three structural features that distinguish language generation from the classical RL problems of Part~II.
+
+\begin{remark}[Distinctive features of the token-level MDP]
+\label{rem:lm-mdp-features}
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Enormous action space.} With $|\cA| \sim 10^5$, storing a value function $Q(s, a)$ explicitly for all actions is computationally infeasible. This rules out tabular methods (Chapter~\ref{ch:dp}) and most Q-learning variants, and motivates the policy-gradient and actor-critic approaches of Chapters~\ref{ch:pg}--\ref{ch:actor-critic}.
+  \item \textbf{Long horizon with sparse reward.} A typical response is 200--2000 tokens long. The single terminal reward must be credited across hundreds of preceding actions\,---\,the credit-assignment problem (the credit-assignment problem) in its most extreme form. Process reward models (Section~\ref{sec:prm} in Chapter~\ref{ch:reward-models}) address this by providing step-level feedback.
+  \item \textbf{Deterministic transitions.} Once a token is appended, the state is determined with certainty. All stochasticity comes from the policy itself, not from the environment. This simplifies some theoretical analyses but makes exploration harder: the model must rely on its own sampling distribution to visit novel completions.
+\end{enumerate}
+\end{remark}
+
+\begin{example}[Counting tokens in the MDP]
+\label{ex:token-mdp-example}
+Consider the prompt $x = $ ``\texttt{What is the capital of France?}'' (8 tokens) and the response $y = $ ``\texttt{The capital of France is Paris.}'' (7 tokens). The episode has $T = 7$ steps. At step $t = 5$, the state is $s_5 = (x, \texttt{The}, \texttt{capital}, \texttt{of}, \texttt{France}, \texttt{is})$\,---\,a sequence of 13 tokens. The action is $a_5 = \texttt{Paris}$. The reward is zero for all $t < 7$, and $r(x, y)$ is given at $t = 7$ by, for example, a reward model that evaluates the complete response. If the reward model scores factual correctness and assigns $r = +1.4$, then $G_0 = 1.4$ regardless of which intermediate tokens were generated.
+\end{example}
+
+% ===========================================================
+\section{Pre-Training}
+\label{sec:pretraining}
+\index{pre-training}
+
+The first stage in building a capable language model is \textbf{pre-training}: training a randomly initialised Transformer on a massive corpus of text using the next-token prediction objective~\eqref{eq:ntp-loss}. Pre-training is by far the most compute-intensive stage and typically consumes more than 95\% of the total training budget for a frontier model.
+
+\subsection{Data}
+
+Pre-training corpora are assembled from diverse sources across the internet and institutional collections. Common components include:
+
+\begin{description}[leftmargin=!, labelwidth=3.5cm]
+  \item[Common Crawl] Monthly snapshots of the web; after aggressive deduplication and quality filtering, this typically provides 50--70\% of training tokens.
+  \item[Books] Project Gutenberg, Books3, and similar collections; rich in long-form structured text with coherent narrative.
+  \item[Scientific literature] ArXiv, PubMed, and Semantic Scholar; crucial for technical reasoning ability.
+  \item[Code] GitHub repositories across dozens of programming languages; strongly correlated with improved mathematical and structured reasoning.
+  \item[Wikipedia and Wikidata] High-quality encyclopaedic text with factual claims; typically over-sampled relative to its raw size.
+\end{description}
+
+The total token counts for current frontier models range from one to fifteen trillion tokens. LLaMA~3 was trained on 15 trillion tokens; GPT-4's training data is not publicly disclosed but is believed to be of comparable scale. Assembling such a corpus requires substantial engineering: near-duplicate removal (using MinHash locality-sensitive hashing), language identification, quality filtering (rejecting documents below a perplexity threshold set by a small reference model), and PII scrubbing.
+
+\subsection{The Pre-Training Loss and Emergent Capabilities}
+
+Pre-training optimises~\eqref{eq:ntp-loss} using variants of AdamW (Loshchilov \& Hutter, 2019) with a cosine learning rate schedule. Gradient checkpointing, mixed-precision arithmetic (bfloat16), and distributed training across thousands of GPUs or TPUs are standard engineering choices.
+
+The remarkable empirical observation is that, as the model grows and trains on more data, it does not merely memorise the training corpus\,---\,it acquires \textbf{emergent capabilities}\index{emergent capabilities} not explicitly present in the training signal. A model trained only to predict the next word learns to:
+
+\begin{itemize}[leftmargin=*]
+  \item translate between languages it has never seen paired together;
+  \item write and debug computer programs;
+  \item solve multi-step mathematical problems by showing intermediate working;
+  \item answer factual questions using knowledge implicitly encoded in the corpus.
+\end{itemize}
+
+Wei et al.\ (2022) documented that some capabilities appear abruptly at certain model sizes, suggesting discontinuous phase transitions in the loss landscape rather than smooth interpolation. The precise mechanism behind emergence remains an active research question.
+
+\subsection{Base Models and Their Limitations}
+
+The output of pre-training is a \textbf{base model}\index{base model} (also called a \textbf{foundation model} or \textbf{pretrained model}). Given a prompt, the base model continues it in the style of whatever text it learned to associate with that prefix. This behaviour is useful for text completion tasks but problematic for interactive use: asked ``How do I bake sourdough bread?'', the base model may respond with more questions (as if continuing a FAQ document) rather than with a helpful recipe.
+
+More seriously, the base model has no mechanism to refuse harmful requests, distinguish facts from speculation, or adopt the conversational register expected of an assistant. These limitations motivate the two subsequent training stages.
+
+% ===========================================================
+\section{Supervised Fine-Tuning}
+\label{sec:sft}
+\index{supervised fine-tuning (SFT)}
+
+\textbf{Supervised fine-tuning} (SFT) adapts the base model to follow instructions by training on a curated dataset of (instruction, response) pairs. The procedure is essentially identical to pre-training\,---\,next-token prediction via cross-entropy loss\,---\,but on a much smaller, higher-quality dataset of demonstrations.
+
+\subsection{Data Format and Instruction Templates}
+
+SFT data consists of pairs $(x^{(i)}, y^{(i)})$, where $x^{(i)}$ is an instruction (a user request, question, or task description) and $y^{(i)}$ is a high-quality response written or curated by a human annotator or filtered from existing high-quality sources. In practice, conversations are multi-turn, so the input $x^{(i)}$ may include the full dialogue history.
+
+To structure the input for the model, a \textbf{chat template}\index{chat template} wraps each turn with special tokens:
+\begin{verbatim}
+<|system|> You are a helpful assistant. <|end|>
+<|user|> What is the capital of France? <|end|>
+<|assistant|> The capital of France is Paris. <|end|>
+\end{verbatim}
+The model is trained to predict only the assistant tokens; the user and system tokens are \emph{masked out} in the loss computation so that the gradient does not incentivise the model to imitate user speech patterns.
+
+\subsection{SFT Loss Function}
+
+The SFT loss is the same cross-entropy as~\eqref{eq:ntp-loss}, but applied only to the response tokens:
+
+\begin{equation}
+\label{eq:sft-loss}
+\mathcal{L}_{\mathrm{SFT}}(\theta) = -\frac{1}{N}\sum_{i=1}^{N}\sum_{t=1}^{T_i} \log p_\theta\!\left(y_t^{(i)} \mid x^{(i)}, y_{1:t-1}^{(i)}\right).
+\end{equation}
+
+The gradient of~\eqref{eq:sft-loss} with respect to $\theta$ is computed only over positions where $y_t$ is an assistant token. This asymmetry is crucial: it teaches the model to generate good responses without pushing it to imitate user queries or system prompts.
+
+\subsection{Datasets and Examples}
+
+\textbf{Stanford Alpaca} (Taori et al., 2023)\index{Alpaca} was one of the first widely reproduced SFT datasets: 52{,}000 instruction-following demonstrations generated by prompting \texttt{text-davinci-003} using the Self-Instruct method (Wang et al., 2023). Despite its modest size, Alpaca demonstrated that a 7-billion-parameter LLaMA model could acquire useful instruction-following behaviour.
+
+\textbf{T\"{u}lu} (Wang et al., 2023; Ivison et al., 2024)\index{Tülu} is a family of instruction-tuned models trained on a mixture of curated open-source datasets. T\"{u}lu~3 (2024) uses over one million instruction-following examples assembled from diverse sources, with careful deduplication and quality filtering, and includes both SFT and preference-based fine-tuning stages. It serves as a strong open-source baseline for studying the full post-training pipeline.
+
+\subsection{Exposure Bias and the Ceiling of SFT}
+
+SFT uses \textbf{teacher forcing}\index{teacher forcing}: at each step $t$ during training, the model receives the \emph{ground-truth} previous token $y_{t-1}$ as input, rather than its own prediction $\hat{y}_{t-1}$. At inference time, this assumption breaks down\,---\,the model must condition on its own (possibly erroneous) previous outputs. This mismatch, known as \textbf{exposure bias}\index{exposure bias} (Ranzato et al., 2015), can cause error accumulation: a small mistake at step $t$ places the model in a state it has never encountered during training, making further errors more likely.
+
+More fundamentally, SFT is bounded by the quality of its demonstrations. No matter how large the SFT dataset, the model cannot learn to produce responses better than the annotators who wrote them. For tasks where human demonstrations are expensive to collect at scale, or where the space of possible good responses is richer than any finite dataset can capture, this ceiling becomes binding. These observations motivate the alignment stage\,---\,training on preference comparisons and reward signals rather than fixed demonstrations.
+
+% ===========================================================
+\section{The Post-Training Pipeline}
+\label{sec:post-training-pipeline}
+\index{post-training pipeline}
+
+Modern language model development follows a three-stage pipeline that can be understood as progressively shifting the training signal from self-supervised statistics toward human preferences and verifiable correctness. Figure~\ref{fig:post-training-pipeline} illustrates the full pipeline.
+
+\begin{figure}[ht]
+\centering
+% Two-row layout: top row has 4 pipeline stages; bottom row has data nodes.
+% This keeps all content within \textwidth (~14 cm).
+\begin{tikzpicture}[
+  node distance=0.7cm and 1.1cm,
+  stage/.style={draw, rounded corners=5pt, minimum width=2.0cm, minimum height=1.0cm,
+                text width=1.9cm, align=center, font=\small\bfseries},
+  data/.style={draw, dashed, rounded corners=3pt, minimum width=1.9cm,
+               minimum height=0.6cm, text width=1.8cm, align=center,
+               font=\scriptsize, fill=gray!10},
+  arr/.style={-{Stealth[length=5pt]}, thick},
+  larr/.style={-{Stealth[length=4pt]}, dashed, gray},
+  lbl/.style={font=\scriptsize\itshape, text width=2.0cm, align=center}
+]
+
+% ---- Top row: pipeline stages ----
+\node[stage, fill=blue!12]   (pt)  {Pre-\\Training};
+\node[stage, fill=green!15,   right=0.9cm of pt]  (sft) {SFT};
+\node[stage, fill=orange!18,  right=0.9cm of sft] (rm)  {Reward\\Model};
+\node[stage, fill=red!12,     right=0.9cm of rm]  (rl)  {RL\\Alignment};
+\node[stage, fill=purple!12,  right=0.9cm of rl]  (fin) {Aligned\\LLM};
+
+% ---- Arrows between stage nodes ----
+\draw[arr] (pt)  -- node[above, font=\scriptsize] {base}     (sft);
+\draw[arr] (sft) -- node[above, font=\scriptsize] {SFT}      (rm);
+\draw[arr] (rm)  -- node[above, font=\scriptsize] {$r_\psi$}  (rl);
+\draw[arr] (rl)  --                                            (fin);
+
+% ---- Loss labels above stages (scriptsize, no line breaks) ----
+\node[lbl, above=0.15cm of pt]  {NTP loss};
+\node[lbl, above=0.15cm of sft] {CE masked};
+\node[lbl, above=0.15cm of rm]  {BT pref.~loss};
+\node[lbl, above=0.15cm of rl]  {KL-pen.~reward};
+
+% ---- Data nodes below stages ----
+\node[data, below=0.55cm of pt]  (dpt)  {Web corpus};
+\node[data, below=0.55cm of sft] (dsft) {Demos $(x,y)$};
+\node[data, below=0.55cm of rm]  (drm)  {Prefs $(y_w,y_l)$};
+\node[data, below=0.55cm of rl]  (drl)  {Rollouts + reward};
+
+% ---- Data arrows ----
+\draw[larr] (dpt)  -- (pt);
+\draw[larr] (dsft) -- (sft);
+\draw[larr] (drm)  -- (rm);
+\draw[larr] (drl)  -- (rl);
+
+\end{tikzpicture}
+\caption{The full post-training pipeline for a large language model. Pre-training on web-scale text produces a base model with broad world knowledge. SFT on curated demonstrations teaches the instruction-following format. Reward modelling learns a scalar preference signal from human comparisons. RL alignment optimises the policy against this reward while constraining drift via a KL penalty. Chapters~\ref{ch:practical-rlhf}--\ref{ch:open} develop each RL alignment method in detail.}
+\label{fig:post-training-pipeline}
+\end{figure}
+
+\subsection{Stage Interactions}
+
+The three stages are not independent: each depends critically on the quality of the preceding one.
+
+\textbf{Pre-training sets the knowledge ceiling.} The SFT and RL stages can reshape the model's behaviour, but they cannot instil knowledge the base model does not have. A base model that has never seen mathematics textbooks will not learn to solve integrals through instruction tuning. This is why pre-training data curation is so consequential.
+
+\textbf{SFT sets the behavioural prior.} The SFT model serves as both the starting point and the reference policy $\pi_{\mathrm{ref}}$ for the RL stage. The KL-penalty term $\beta\,\KL{\pi_\theta}{\pi_{\mathrm{ref}}}$ (introduced in Chapter~\ref{ch:reward-models}) anchors the RL policy near the SFT distribution. A poorly trained SFT model therefore limits the effectiveness of RL alignment.
+
+\textbf{Reward modelling determines the alignment signal.} The reward model $r_\psi$ is the only source of feedback during RL training. Its accuracy, calibration, and coverage of the task distribution directly determine the quality of the aligned model. Chapter~\ref{ch:reward-models} develops the theory of reward modelling in depth; Chapters~\ref{ch:practical-rlhf}--\ref{ch:open} show how the reward model is consumed by PPO, DPO, and GRPO respectively.
+
+\subsection{What Each Stage Optimises}
+
+A concise comparison of the three stages appears in Table~\ref{tab:pipeline-comparison}.
+
+\begin{table}[ht]
+\centering
+\caption{Comparison of the three post-training stages.}
+\label{tab:pipeline-comparison}
+\begin{tabular}{lllll}
+\toprule
+\textbf{Stage} & \textbf{Data} & \textbf{Objective} & \textbf{Paradigm} & \textbf{Key limitation} \\
+\midrule
+Pre-training   & Unlabelled text & Next-token NLL & Self-supervised & No behavioural control \\
+SFT            & $(x, y)$ pairs  & Masked NLL & Supervised & Bounded by annotator quality \\
+RL Alignment   & $(x, y_w, y_l)$ or $r(x,y)$ & KL-penalised reward & Reinforcement & Reward overoptimisation \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ===========================================================
+\section{Synthetic Data for Post-Training}
+\label{sec:synthetic-data}
+\index{synthetic data}
+
+Human annotation is the limiting resource in post-training. A skilled annotator produces perhaps 20--50 high-quality instruction-following examples per hour; a single training run for a frontier model may require millions. This arithmetic gap has driven the field to rely increasingly on \textbf{synthetic data}: examples generated by AI models rather than directly by human writers. This section surveys the principal methods, their theoretical properties, and the practical risks they introduce.
+
+\subsection{Why Synthetic Data Is Necessary}
+
+Three structural pressures force the use of synthetic data at scale.
+
+\textbf{Volume.} Effective SFT and preference fine-tuning require tens of thousands to millions of examples covering diverse tasks, topics, difficulty levels, and response styles. Human annotation at this scale is prohibitively expensive: assembling one million high-quality preference pairs at \$5 per comparison costs \$5 million, before accounting for inter-annotator disagreement and quality control overhead.
+
+\textbf{Coverage.} Human annotators naturally cluster around familiar domains. Rare but important topics\,---\,niche scientific subfields, obscure programming languages, low-resource human languages\,---\,are systematically underrepresented in human-generated data. Synthetic generation can be directed at these gaps by instruction.
+
+\textbf{Difficulty calibration.} RL training benefits from examples at the right difficulty level: tasks the model can sometimes but not always solve, so that the reward gradient is informative. Generating examples at a precise target difficulty is nearly impossible with human annotators but can be engineered through synthetic pipelines.
+
+\subsection{Self-Instruct}
+\index{Self-Instruct}
+
+\textbf{Self-Instruct} (Wang et al., 2023) is the foundational method for synthetic instruction generation. The pipeline begins with a small seed set of 175 human-written instructions covering a diverse range of tasks. At each iteration, the pipeline prompts a large language model (the \textbf{teacher}) with a few of these seed instructions and asks it to generate new instructions, classify them by task type, and generate input-output pairs. New instructions that are too similar to existing ones (measured by ROUGE-L similarity) are discarded; the remainder are added to the pool. Iterating this process, Wang et al.\ grew the seed set to 52{,}000 instruction-following pairs\,---\,the Stanford Alpaca dataset\,---\,at a cost of roughly \$500 in API fees for \texttt{text-davinci-003} inference.
+
+The Self-Instruct paper demonstrated that a 7B-parameter LLaMA model fine-tuned on this data matched the instruction-following ability of a model trained on private human-written data, suggesting that teacher-model quality is the primary bottleneck, not the human-vs-synthetic distinction per se.
+
+\subsection{Distillation from Teacher Models}
+\index{distillation!from teacher models}
+
+A more direct approach is to use a stronger model (the teacher) to generate responses that a weaker model (the student) is then trained on. The teacher can be accessed via an API (OpenAI, Anthropic, Google) or a locally-run open-weights model. The procedure is:
+
+\begin{enumerate}[leftmargin=*]
+  \item Collect or generate a set of prompts $\{x^{(i)}\}$ covering the desired task distribution.
+  \item For each prompt, sample one or more responses from the teacher: $y^{(i)} \sim \pi_{\mathrm{teacher}}(\cdot \mid x^{(i)})$.
+  \item Fine-tune the student on the resulting $(x^{(i)}, y^{(i)})$ pairs using~\eqref{eq:sft-loss}.
+\end{enumerate}
+
+Distillation is particularly effective for \emph{format transfer}: teaching a small model to adopt the style, structure, and step-by-step reasoning patterns of a larger model. The Orca series (Mukherjee et al., 2023) demonstrated that a 13B-parameter model trained on GPT-4's detailed explanatory responses outperformed models many times its size on certain benchmarks, suggesting that the teacher's reasoning process, not just its final answer, is the crucial ingredient.
+
+The principal limitation of distillation is legal and commercial: most frontier model APIs prohibit using their outputs to train competing models. Open-weight teachers (LLaMA~3, Mistral, Qwen) do not carry this restriction and are increasingly used in practice.
+
+\subsection{Evol-Instruct and Complexity Escalation}
+\index{Evol-Instruct}\index{WizardLM}
+
+\textbf{Evol-Instruct} (Xu et al., 2023), introduced as part of the \textbf{WizardLM} project, observed that Self-Instruct tends to produce instructions of uniform (and often low) difficulty. Their insight is to \emph{evolve} existing instructions by repeatedly applying one of several mutation operators:
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Add constraints}: append a requirement that narrows the response space (``explain without using the word `neural network'\,'').
+  \item \textbf{Deepen}: ask for more detailed or rigorous treatment (``include a proof of the main theorem'').
+  \item \textbf{Broaden}: generalise the instruction to a wider context.
+  \item \textbf{Increase reasoning}: add a multi-step deduction requirement.
+  \item \textbf{In-breadth evolution}: generate a completely new but related instruction.
+\end{itemize}
+
+Each evolution step is performed by prompting a teacher model. The resulting dataset spans a wide spectrum of difficulty levels, which directly benefits RL training: easy examples provide baseline reward and hard examples provide the challenging signal that drives capability improvement. WizardLM-2 (2024), trained on Evol-Instruct data at large scale, achieves competitive performance with models twice its parameter count on coding and mathematical reasoning benchmarks.
+
+\subsection{Persona-Based Generation}
+\index{persona-based generation}
+
+A complementary strategy for increasing diversity is \textbf{persona-based generation}: instead of varying the instruction, vary the demographic or professional identity of the hypothetical user. The teacher model is prompted with a persona description such as ``You are a second-year PhD student in computational biology'' or ``You are a high-school student struggling with algebra''. The resulting instructions and responses naturally cluster around different vocabularies, difficulty levels, and communication styles.
+
+Chan et al.\ (2024) showed that persona-conditioned generation, applied at scale using 1 billion distinct synthetic personas derived from web text, produces instruction datasets with substantially higher diversity than unconditioned generation. The T\"{u}lu~3 dataset employs persona-based generation as one component of its data mixture.
+
+\subsection{Preference Data Synthesis}
+\index{preference data synthesis}
+
+Beyond instruction-following demonstrations, RL alignment requires \textbf{preference data}: triplets $(x, y_w, y_l)$ in which a human (or a model) judges $y_w$ to be better than $y_l$. Collecting such comparisons from humans at scale is even more expensive than collecting demonstrations, since each annotation requires a human to read and compare two complete responses. Synthetic preference generation addresses this bottleneck through three complementary mechanisms.
+
+\textbf{Multi-response sampling and LLM judging.} The most common approach:
+\begin{enumerate}[leftmargin=*]
+  \item For each prompt $x$, sample $k \geq 2$ responses from the current or a teacher model.
+  \item Score each response using a \textbf{judge model}\index{LLM-as-judge} (typically GPT-4 or an open-weight judge) against a rubric.
+  \item Form preference pairs by taking $y_w$ to be the highest-scoring response and $y_l$ to be any lower-scoring one (or specifically the lowest).
+\end{enumerate}
+
+\textbf{UltraFeedback} (Cui et al., 2023)\index{UltraFeedback} is the canonical dataset assembled by this method: 64{,}000 prompts, each paired with four responses sampled from diverse models, scored by GPT-4 on four rubrics (instruction-following, truthfulness, honesty, helpfulness). The resulting preference dataset has been used to train dozens of aligned models including the Zephyr series.
+
+\textbf{Constitutional AI and RLAIF.} Bai et al.\ (2022) at Anthropic introduced \textbf{Constitutional AI} (CAI)\index{Constitutional AI (CAI)}, in which the AI model itself critiques and revises its responses according to a fixed set of principles (the ``constitution''). The critique-revision loop generates improved responses without human intervention, and the resulting (original, revised) pairs can be used as preference data. The closely related \textbf{RLAIF} (Reinforcement Learning from AI Feedback; Lee et al., 2023)\index{RLAIF} uses an AI labeller in place of human labellers to annotate which of two responses is preferred. Lee et al.\ demonstrated that RLAIF and human RLHF produce models of comparable quality on several standard benchmarks, suggesting that the bottleneck in alignment is not the source of preference labels (human vs.\ AI) but rather their accuracy and coverage.
+
+\textbf{Rubric-based scoring.} Rather than a single overall preference, modern pipelines often ask the judge to score on multiple dimensions\,---\,correctness, conciseness, safety, instruction adherence\,---\,and aggregate. Rubrics can also be made task-specific: for mathematics, the rubric checks whether the final answer is correct and whether intermediate steps are valid. T\"{u}lu~3 uses verifier-graded rubrics for mathematical and coding tasks, replacing the judge model entirely in domains where correctness is checkable.
+
+\subsection{Data Filtering and Quality Control}
+\index{data quality filtering}
+
+Synthetic data generation is cheap but noisy. Quality control mechanisms are essential to prevent low-quality examples from degrading model performance. Standard techniques include:
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Perplexity filtering}: reject responses that the current model assigns extremely high or extremely low perplexity (the former indicates malformed text; the latter indicates near-memorised boilerplate).
+  \item \textbf{Length filtering}: discard responses outside a reasonable length range (very short responses often lack detail; very long ones often pad).
+  \item \textbf{Deduplication}: remove near-duplicates using MinHash or embedding-based cosine similarity to prevent the model from memorising repeated patterns.
+  \item \textbf{Reward model filtering}: keep only responses that a reward model scores above a threshold. This creates a self-consistency property: the data used for training is the data the reward model already considers good.
+  \item \textbf{Difficulty filtering}: for RL training, retain only examples in the ``learnable zone''\,---\,where the model's success rate is between 20\% and 80\%. Tasks the model always solves provide no gradient; tasks it never solves contribute only noise.
+\end{itemize}
+
+\subsection{Model Collapse and Mitigations}
+\index{model collapse}
+
+A fundamental concern with training on synthetic data is \textbf{model collapse}\index{model collapse} (Shumailov et al., 2024): if models are trained on their own outputs (or outputs of models trained similarly), the training distribution may progressively narrow, causing the model to lose the breadth and diversity present in the original human-written corpus. Mathematically, if the training distribution at generation $g$ is $p_g$ and the synthetic data distribution is an approximation of $p_{g-1}$, iterating this process causes the variance of $p_g$ to decrease geometrically, eventually collapsing to a narrow mode.
+
+Four mitigations have been identified:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Mixing with human data.} Always retain a fraction of genuine human-written text in the training mixture. The ratio need not be large: Gerstgrasser et al.\ (2024) showed that even 5--10\% human data suffices to prevent collapse in theory.
+  \item \textbf{Diverse teacher ensemble.} Using multiple teacher models with different architectures and training histories injects distributional diversity that a single teacher cannot provide.
+  \item \textbf{Aggressive deduplication.} Near-duplicate synthetic examples are the mechanism through which mode collapse propagates; removing them breaks the positive feedback loop.
+  \item \textbf{Watermarking and provenance tracking.} Tagging synthetic data at generation time allows downstream curators to monitor synthetic fraction and cap it as needed.
+\end{enumerate}
+
+\subsection{Key Synthetic Datasets}
+\index{datasets!synthetic}
+
+Table~\ref{tab:synthetic-datasets} summarises the most influential synthetic datasets in the post-training literature.
+
+\begin{table}[ht]
+\centering
+\caption{Major synthetic datasets used in post-training.}
+\label{tab:synthetic-datasets}
+\begin{tabular}{lllll}
+\toprule
+\textbf{Dataset} & \textbf{Year} & \textbf{Size} & \textbf{Type} & \textbf{Method} \\
+\midrule
+Stanford Alpaca     & 2023 & 52K    & SFT          & Self-Instruct (GPT-3.5) \\
+UltraFeedback       & 2023 & 256K pairs & Preference  & LLM judge (GPT-4) \\
+T\"{u}lu~3          & 2024 & 1M+    & SFT + Pref.  & Mixture, persona, rubric \\
+OpenThoughts~3      & 2025 & 1M+    & SFT (CoT)    & Distillation (DeepSeek-R1) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{OpenThoughts~3}\index{OpenThoughts} (2025) exemplifies the emerging class of \emph{reasoning-focused} synthetic datasets: one million chain-of-thought solutions to mathematical, scientific, and coding problems, distilled from DeepSeek-R1. Training a base model on OpenThoughts~3 produces a model that exhibits multi-step reasoning in the $\langle\text{thinking}\rangle$ format, substantially improving performance on competition mathematics (AIME, MATH) and coding benchmarks (HumanEval).
+
+% ===========================================================
+\section{Evaluation of Language Models}
+\label{sec:lm-eval}
+\index{evaluation!language models}
+
+Evaluating language models is substantially harder than evaluating classical RL agents. A policy in a gridworld either reaches the goal or it does not; the quality of a conversational response resists such binary characterisation. This section surveys the principal evaluation paradigms.
+
+\subsection{Automated Benchmarks}
+\index{benchmarks}
+
+Automated benchmarks provide cheap, reproducible, and objective evaluation. The most widely used include:
+
+\begin{description}[leftmargin=!, labelwidth=3.5cm]
+  \item[MMLU] (Hendrycks et al., 2021) Massive Multitask Language Understanding: 57 academic subjects from high-school to professional level, in multiple-choice format. Tests breadth of factual knowledge.
+  \item[HellaSwag] (Zellers et al., 2019) Commonsense NLI: choose the most plausible continuation of an activity description. Tests grounded commonsense reasoning.
+  \item[GSM8K] (Cobbe et al., 2021) Grade-school mathematics: 8500 multi-step arithmetic word problems. Answers are verified by checking the final numerical result.
+  \item[HumanEval] (Chen et al., 2021) Code generation: 164 Python programming tasks, evaluated by running unit tests against the generated code.
+  \item[MATH] (Hendrycks et al., 2021) Competition mathematics: 12{,}500 problems at AMC/AIME difficulty, requiring symbolic manipulation and multi-step proof.
+\end{description}
+
+Automated benchmarks have a critical failure mode: models can be \textbf{contaminated}\index{benchmark contamination} if the evaluation data appears in the pre-training corpus. GPT-4's score on GSM8K improved by 7 percentage points when the evaluation split was reconstructed with novel problem wordings, suggesting partial memorisation. Responsible evaluation requires checking for n-gram overlap between the benchmark and the training data.
+
+\subsection{Human Evaluation}
+\index{human evaluation}
+
+For open-ended tasks where no ground-truth answer exists\,---\,creative writing, open-domain dialogue, summarisation\,---\,human evaluation remains the gold standard. Annotators are typically asked to compare two responses side-by-side (A/B evaluation) and indicate which is better on one or more dimensions. Platforms such as Chatbot Arena (Chiang et al., 2024) collect pairwise preferences at scale from volunteer users, producing Elo-style rankings across models.
+
+Human evaluation is expensive, slow, and exhibits systematic biases: annotators prefer longer responses (verbosity bias), responses that agree with their prior views (sycophancy), and responses from models they believe to be more capable (anchoring). Controlling for these biases requires careful experimental design and large sample sizes.
+
+\subsection{LLM-as-Judge}
+\index{LLM-as-judge}
+
+\textbf{LLM-as-judge} (Zheng et al., 2023) uses a capable language model (typically GPT-4) as an automated evaluator, replacing human annotators for A/B comparisons. The judge is prompted with the instruction, the two responses, and a structured rubric, and asked to produce a preference judgement with a brief explanation. MT-Bench and AlpacaEval 2.0 use this paradigm to rank instruction-tuned models.
+
+LLM-as-judge inherits the biases of the judge model and introduces a \textbf{self-enhancement bias}: models from the same developer as the judge tend to be rated more favourably. Mitigations include using multiple judges, asking for chain-of-thought explanations before the final verdict, and position-swapping (evaluating each pair in both orders and averaging).
+
+\subsection{Reward Model Evaluation}
+\index{reward model!evaluation}
+
+When the downstream use of evaluation is to select between candidate models during RL training, a learned reward model $r_\psi$ is used as the evaluator. The reward model's accuracy is measured as the fraction of held-out preference pairs on which it correctly predicts the human-preferred response. As noted in Chapter~\ref{ch:reward-models}, well-calibrated reward models achieve 70--80\% accuracy on held-out human preferences. Beyond accuracy, the distribution of reward scores and their correlation with independent human ratings are monitored to detect systematic biases.
+
+% ===========================================================
+\section{Summary}
+\label{sec:lm-summary}
+
+This chapter has introduced the language modelling infrastructure that underlies the RLHF methods developed in subsequent chapters.
+
+A language model is an autoregressive probability distribution over token sequences, implemented using the Transformer architecture. Pre-training on web-scale text using next-token prediction instils broad world knowledge and emergent capabilities; supervised fine-tuning on curated instruction-response pairs teaches the behavioural format expected of an assistant. The KL-penalised RL alignment stage then optimises a reward signal\,---\,learned from human preference comparisons or verifiable task outcomes\,---\,to push the model beyond the ceiling set by its demonstrations.
+
+The crucial conceptual bridge is the token-level MDP (Definition~\ref{def:token-mdp}): language generation maps exactly onto the MDP framework of Chapters~\ref{ch:mdp}--\ref{ch:actor-critic}, with the language model as the policy, the vocabulary as the action space, and a terminal reward from a human or a reward model. This mapping justifies the direct application of policy-gradient methods to language model training.
+
+Synthetic data has become an indispensable component of every post-training stage: Self-Instruct and Evol-Instruct for SFT instruction diversity, LLM-judge pipelines for preference data at scale, and reasoning distillation for chain-of-thought fine-tuning. Model collapse is a genuine risk but can be mitigated by mixing human data, using diverse teacher ensembles, and aggressive deduplication.
+
+The chapters that follow develop the three main RL alignment algorithms in detail. Chapter~\ref{ch:practical-rlhf} treats PPO-based RLHF, the pipeline pioneered by InstructGPT and used in GPT-4 and Claude~2. Subsequent chapters cover DPO, which eliminates the explicit reward model, and GRPO, which reduces variance through group-relative baseline subtraction and is central to the DeepSeek reasoning models. In each case, the token-level MDP established here provides the common formal language.
+
+% ===========================================================
+\section*{Exercises}
+\addcontentsline{toc}{section}{Exercises}
+
+\begin{exercise}
+\label{ex:lm-perplexity}
+A language model assigns the following probabilities to the tokens of the sentence ``The cat sat'': $p(\text{The}) = 0.05$, $p(\text{cat} \mid \text{The}) = 0.02$, $p(\text{sat} \mid \text{The cat}) = 0.08$.
+\begin{enumerate}
+  \item Compute the cross-entropy loss~\eqref{eq:ntp-loss} for this sentence.
+  \item Compute the perplexity~\eqref{eq:perplexity}.
+  \item If a uniform distribution over a vocabulary of size $|\mathcal{V}| = 50{,}000$ is used instead, what is the perplexity? Compare and interpret.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:token-mdp-size}
+Consider the token-level MDP (Definition~\ref{def:token-mdp}) with vocabulary size $|\mathcal{V}| = 100{,}000$ and a maximum response length of $T = 512$ tokens.
+\begin{enumerate}
+  \item Give an upper bound on $|\cS|$, the number of possible states. How many bits of memory would be required to store a lookup table $Q(s, a)$ for all $(s, a)$ pairs, assuming each entry requires 4 bytes?
+  \item Explain why value-based methods such as DQN are infeasible for this MDP.
+  \item The policy-gradient theorem (Chapter~\ref{ch:pg}) requires only $\nabla_\theta \log \pi_\theta(a \mid s)$, not the Q-table. Why does this make policy-gradient methods tractable despite the enormous state-action space?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:causal-mask}
+The causal mask in a decoder-only Transformer ensures that position $i$ cannot attend to positions $j > i$.
+\begin{enumerate}
+  \item Write the masked attention weight $\alpha_{ij}$ as a formula using the indicator function $\ind[j \leq i]$.
+  \item Explain why this mask is equivalent to the Markov property of the token-level MDP: the prediction of $y_t$ depends only on $(x, y_{1:t-1})$ and not on any future token.
+  \item Would the causal mask be necessary for a language model used only as a \emph{classifier} (predicting a label for an entire sequence)? Justify your answer.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:sft-exposure-bias}
+The exposure bias problem arises because SFT uses teacher forcing during training but relies on the model's own outputs at inference time.
+\begin{enumerate}
+  \item Formalise the mismatch: let $p_{\mathrm{teacher}}$ be the teacher-forcing training distribution over contexts at step $t$ and $p_{\mathrm{model}}$ the corresponding inference distribution. Show that they coincide only if the model is perfect (assigns probability~1 to the correct next token at every step).
+  \item Scheduled sampling (Bengio et al., 2015) replaces the ground-truth token with the model's own prediction with probability $\epsilon_t$, where $\epsilon_t$ increases from 0 to 1 during training. Describe one advantage and one disadvantage of this approach compared to standard teacher forcing.
+  \item Explain why RL fine-tuning (which trains on the model's own rollouts) does not suffer from exposure bias.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:chinchilla}
+The Chinchilla scaling law states that compute-optimal training requires $D \approx 20N$ tokens for a model with $N$ parameters. Assume a compute budget of $C = 6 \times 10^{23}$ FLOPs and that one training FLOP costs approximately $C \approx 6ND$ FLOPs.
+\begin{enumerate}
+  \item Derive the compute-optimal model size $N^*$ and token count $D^*$ as functions of $C$.
+  \item With the budget above, compute $N^*$ and $D^*$ numerically. Compare to the publicly known configuration of LLaMA~3 8B (8B parameters, 15T tokens). Is LLaMA~3 8B compute-optimal according to Chinchilla?
+  \item The Chinchilla analysis minimises training loss. Argue why a practitioner optimising for \emph{inference cost} might rationally choose a smaller, more overtrained model.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:self-instruct}
+The Self-Instruct pipeline (Wang et al., 2023) seeds instruction generation with 175 human-written examples and grows the dataset by prompting the teacher model.
+\begin{enumerate}
+  \item Describe one mechanism by which the quality of the seed set affects the quality of the generated dataset.
+  \item ROUGE-L similarity is used to filter near-duplicate instructions. Give one example of two instructions that ROUGE-L would flag as similar but that are genuinely distinct in their cognitive demands, and vice versa (two instructions that ROUGE-L scores as dissimilar but are semantically nearly identical).
+  \item Suppose the teacher model used in Self-Instruct has a systematic bias toward certain response styles (e.g., always using bullet points). How would this bias propagate to the student model trained on the resulting data?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:model-collapse}
+Model collapse refers to the progressive narrowing of the model's output distribution when trained iteratively on its own synthetic outputs.
+\begin{enumerate}
+  \item Let $p_0$ be the original human data distribution, and let $\hat{p}_g$ be the distribution learned at generation $g$, approximated by training on samples from $\hat{p}_{g-1}$. Assume that each training step introduces an approximation error bounded by $\epsilon$ in total variation distance: $\mathrm{TV}(\hat{p}_g, p_{g-1}) \leq \epsilon$. Give an upper bound on $\mathrm{TV}(\hat{p}_G, p_0)$ after $G$ generations.
+  \item Shumailov et al.\ (2024) showed that the tails of the distribution (rare but important content) are lost first. Explain intuitively why this is the case using the variance interpretation of model collapse.
+  \item Propose a data mixing strategy that provably prevents the total-variation bound from growing without bound as $G \to \infty$, assuming a fraction $\lambda$ of the training data at each generation is genuine human data.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:llm-as-judge}
+LLM-as-judge uses a capable model to evaluate responses, replacing human annotators.
+\begin{enumerate}
+  \item Describe the \emph{verbosity bias} in LLM-as-judge systems and propose a prompt-engineering mitigation.
+  \item Position bias refers to the tendency of LLM judges to prefer the response presented first (or second). Design an evaluation protocol that eliminates position bias, and explain why your protocol is unbiased.
+  \item Suppose a reward model trained on LLM-judge-generated preferences is subsequently used in PPO to produce an aligned model. Trace how a systematic bias in the judge model propagates through the pipeline to affect the final aligned model's behaviour.
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:constitutional-ai}
+Constitutional AI (Bai et al., 2022) uses a set of principles to guide self-critique and revision.
+\begin{enumerate}
+  \item Write out the critique-revision loop as a two-step procedure. What is the role of the constitution? What distinguishes this from standard SFT?
+  \item RLAIF uses the same principle but at the preference labelling stage: the model is asked to judge which of two responses better adheres to the constitution. Show that if the judge model is perfect (always picks the truly better response), then RLAIF and human RLHF produce the same optimal policy under the Bradley--Terry model (Chapter~\ref{ch:reward-models}).
+  \item What is the main failure mode of RLAIF when the judge model is imperfect, and how does it relate to reward overoptimisation?
+\end{enumerate}
+\end{exercise}
+
+\begin{exercise}
+\label{ex:mdp-mapping}
+Consider a simple language generation task: the model must produce a binary string of length $T = 3$ (e.g., ``010''), where the reward is~$+1$ if the number of ones equals the number of zeros and $-1$ otherwise.
+\begin{enumerate}
+  \item Write out the complete token-level MDP: enumerate all states, actions, transitions, and rewards.
+  \item Compute the optimal policy $\pi^*$ using dynamic programming (the problem is small enough for a manual computation).
+  \item For $T = 3$, there are $2^3 = 8$ possible responses. Show that the RLHF objective~\eqref{eq:rlhf-objective} equals $\Prob_{\pi_\theta}(\text{balanced string}) - \Prob_{\pi_\theta}(\text{unbalanced string})$, and compute its value under the uniform policy $\pi_\theta(0 \mid s) = \pi_\theta(1 \mid s) = 0.5$ for all $s$.
+\end{enumerate}
+\end{exercise}

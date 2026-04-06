@@ -1,0 +1,655 @@
+% ===========================================================
+%  Chapter 13 — GRPO and Online RL with Verifiable Rewards
+% ===========================================================
+\chapter[GRPO and Online RL]{GRPO and Online RL with Verifiable Rewards}
+\label{ch:grpo}
+
+\begin{quote}
+\itshape
+The best way to evaluate whether an answer is correct is to check it, not to ask someone whether it looks correct.
+\end{quote}
+
+\bigskip
+
+Chapter~\ref{ch:actor-critic} developed Proximal Policy Optimization (PPO), the workhorse algorithm for reinforcement learning from human feedback (RLHF).  PPO achieves stable policy updates through a clipped surrogate objective and computes advantages via a learned critic (value function).  Chapter~\ref{ch:dpo} then showed that Direct Preference Optimisation (DPO) can bypass the reward model entirely by reparametrising the KL-regularised objective into a supervised loss on preference pairs.  DPO is simple and stable, but fundamentally offline: it trains on a fixed dataset and cannot explore.
+
+This chapter introduces \textbf{Group Relative Policy Optimisation} (GRPO)\index{GRPO}\index{Group Relative Policy Optimisation|see{GRPO}}, the algorithm behind DeepSeek-R1 and other recent reasoning models (Shao~et~al., 2024; DeepSeek-AI, 2025).  GRPO occupies a sweet spot between PPO and DPO: it is \emph{online}\,---\,the policy generates fresh completions at every iteration\,---\,but it eliminates the value-function critic that makes PPO expensive.  In its place, GRPO estimates advantages by sampling a \emph{group} of completions for each prompt and normalising rewards within the group.  The result is a simple, memory-efficient algorithm that retains the stability benefits of PPO's clipping mechanism.
+
+We also formalise \textbf{Reinforcement Learning with Verifiable Rewards} (RLVR)\index{RLVR}\index{Reinforcement Learning with Verifiable Rewards|see{RLVR}}, a training paradigm in which the reward signal comes from a deterministic verifier (e.g.\ a unit-test suite or a symbolic math checker) rather than a learned reward model.  RLVR is the natural companion of GRPO: when rewards are binary and noise-free, the group-normalised advantage is especially well-behaved, and the absence of a learned reward model eliminates the risk of reward hacking.
+
+Section~\ref{sec:grpo-motivation} motivates GRPO by identifying the specific limitations of PPO and DPO that it addresses.  Section~\ref{sec:grpo-objective} derives the GRPO objective in full.  Section~\ref{sec:grpo-algorithm} presents the complete algorithm.  Section~\ref{sec:grpo-theory} provides theoretical analysis, including the connection to REINFORCE Leave-One-Out (RLOO, Section~\ref{sec:rloo} of Chapter~\ref{ch:pg}) and a bias-variance analysis of the group size.  Section~\ref{sec:rlvr} formalises RLVR.  Section~\ref{sec:rejection-sampling} discusses rejection sampling and best-of-$N$ as a simpler baseline.  Section~\ref{sec:grpo-scale} describes the engineering of online RL training at scale.  Section~\ref{sec:grpo-comparison} compares PPO, GRPO, and DPO in a unified table.  Section~\ref{sec:grpo-summary} summarises the chapter.
+
+% ===========================================================
+\section{Motivation: Beyond PPO and DPO}
+\label{sec:grpo-motivation}
+
+\subsection{The Cost of the Critic in PPO}
+
+\index{PPO!critic cost}
+Recall from Section~\ref{sec:ppo} that PPO's clipped surrogate objective~\eqref{eq:ppo-clip} requires advantage estimates $\hat{A}_t$, which are computed via Generalised Advantage Estimation (GAE, Definition~\ref{def:gae}).  GAE in turn requires a learned value function $V_\phi(S_t)$\,---\,the \emph{critic}\,---\,whose parameters $\phi$ are trained alongside the actor.  In the RLHF setting described in Section~\ref{sec:ppo-llm}, the four-model architecture (actor, critic, reference model, reward model) demands enormous GPU memory.  At the 70B-parameter scale, each model copy consumes approximately 140\,GB in half-precision, so four copies require 560\,GB\,---\,more than a single 8$\times$A100 node.
+
+The critic is also a source of instability.  It must track a moving target: as the actor improves, $V^{\pi_\theta}$ changes, and the critic must relearn.  In early training the critic is especially inaccurate, producing noisy advantage estimates that can destabilise the actor.  Careful initialisation (Section~\ref{sec:ppo-llm}) mitigates but does not eliminate this problem.
+
+\subsection{The Distribution Shift Problem in DPO}
+
+\index{DPO!distribution shift}
+Chapter~\ref{ch:dpo} showed that DPO eliminates both the reward model and the critic, reducing the memory footprint to two model copies ($\pi_\theta$ and $\pi_\mathrm{ref}$).  The price is that DPO is offline: it trains on a fixed preference dataset $\mathcal{D} = \{(x^{(i)}, y_w^{(i)}, y_l^{(i)})\}$ collected under the SFT policy.  As training proceeds and $\pi_\theta$ moves away from $\pi_\mathrm{SFT}$, the preference labels become stale.  Responses that the improved policy would now generate are absent from $\mathcal{D}$, and the model cannot discover them.  Section~\ref{sec:dpo-limitations} of Chapter~\ref{ch:dpo} analysed this limitation in detail: DPO converges to the optimal policy \emph{for the given fixed dataset}, but further improvement requires new data.
+
+\subsection{GRPO: The Best of Both Worlds}
+
+\index{GRPO!motivation}
+GRPO resolves both problems simultaneously:
+\begin{description}[leftmargin=!,labelwidth=3.5cm]
+  \item[No critic] Advantages are estimated from the group of sampled completions, not from a learned value function.  The memory footprint drops from four to two model copies (actor $\pi_\theta$ and reference $\pi_\mathrm{ref}$), the same as DPO.
+  \item[Online] The policy generates new completions at every iteration and receives fresh reward feedback.  There is no distribution shift: the reward signal is always calibrated to the current policy's output distribution.
+  \item[Stable updates] GRPO inherits PPO's clipped importance ratio, preventing excessively large policy steps.
+\end{description}
+The key insight is that the critic's primary role\,---\,providing a baseline for variance reduction\,---\,can be fulfilled by the empirical statistics of a group of completions sampled from the current policy.  This idea is closely related to the RLOO estimator (Section~\ref{sec:rloo} of Chapter~\ref{ch:pg}), which uses a leave-one-out baseline; GRPO extends it with standardisation and PPO-style clipping.
+
+Figure~\ref{fig:grpo-architecture} contrasts the model architecture of PPO-RLHF (four models) with GRPO-RLVR (two models plus a verifier).
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+    node distance=1.2cm and 2.0cm,
+    box/.style={rectangle, draw, rounded corners=4pt, minimum width=2.2cm,
+                minimum height=0.8cm, font=\small, fill=blue!8},
+    verifier/.style={rectangle, draw, rounded corners=4pt, minimum width=2.2cm,
+                minimum height=0.8cm, font=\small, fill=green!12},
+    env/.style={rectangle, draw, rounded corners=4pt, minimum width=2.2cm,
+                minimum height=0.8cm, font=\small, fill=orange!12},
+    arr/.style={-Stealth, thick},
+    lab/.style={font=\footnotesize, inner sep=2pt}
+  ]
+  % PPO side
+  \node[font=\small\bfseries] at (0, 3.2) {PPO-RLHF (4 models)};
+  \node[box] (actor1) at (-1.2, 2.2) {Actor $\pi_\theta$};
+  \node[box] (critic) at (1.2, 2.2) {Critic $V_\phi$};
+  \node[box] (ref1) at (-1.2, 0.8) {Ref.\ $\pi_\mathrm{ref}$};
+  \node[env] (rm) at (1.2, 0.8) {Reward model $r_\psi$};
+
+  % GRPO side
+  \node[font=\small\bfseries] at (5.5, 3.2) {GRPO-RLVR (2 models)};
+  \node[box] (actor2) at (4.3, 2.2) {Actor $\pi_\theta$};
+  \node[box] (ref2) at (6.7, 2.2) {Ref.\ $\pi_\mathrm{ref}$};
+  \node[verifier] (ver) at (5.5, 0.8) {Verifier $V(q,o)$};
+
+  % Labels
+  \node[lab, below=0.15cm of critic, gray] {(eliminated)};
+  \node[lab, below=0.15cm of rm, gray] {(replaced by verifier)};
+\end{tikzpicture}
+\caption{Model architecture comparison.  PPO-RLHF requires four neural network copies: actor, critic, reference, and reward model.  GRPO-RLVR requires only two copies (actor and reference) plus a lightweight deterministic verifier, halving the memory footprint.}
+\label{fig:grpo-architecture}
+\end{figure}
+
+% ===========================================================
+\section{The GRPO Objective}
+\label{sec:grpo-objective}
+
+\index{GRPO!history}
+GRPO was introduced by Shao~et~al.\ (2024) in the DeepSeekMath paper, where it was used to improve mathematical reasoning in a 7B-parameter language model.  The algorithm was subsequently adopted as the RL component of the DeepSeek-R1 pipeline (DeepSeek-AI, 2025), achieving state-of-the-art reasoning performance on competition-level mathematics, code generation, and scientific problem solving.  The name ``group relative'' reflects the two defining features: advantages are computed relative to a \emph{group} of completions for the same prompt, and they are expressed as \emph{relative} deviations (standardised by the group standard deviation).
+
+\subsection{Setup and Notation}
+
+\index{GRPO!notation}
+Let $\pi_\theta$ denote the language model policy being trained, $\pi_{\theta_\mathrm{old}}$ the policy at the start of the current iteration (before the gradient step), and $\pi_\mathrm{ref}$ the frozen reference policy (typically the SFT checkpoint).  A prompt $q$ is drawn from a dataset $\mathcal{D}$.  For each prompt, GRPO samples a \textbf{group}\index{group sampling} of $G$ independent completions from the old policy:
+\begin{equation}
+\label{eq:grpo-sampling}
+o_1, o_2, \ldots, o_G \;\sim\; \pi_{\theta_\mathrm{old}}(\cdot \mid q),
+\end{equation}
+where each completion $o_i = (o_{i,1}, o_{i,2}, \ldots, o_{i,|o_i|})$ is a variable-length sequence of tokens.  A reward function $r(q, o_i) \in \R$ scores each completion, yielding rewards $r_1, r_2, \ldots, r_G$.
+
+\subsection{Group-Relative Advantage}
+
+\index{GRPO!advantage}
+In PPO, the advantage $\hat{A}_t$ is computed from a learned critic via GAE.  GRPO replaces this with a \textbf{group-relative advantage}\index{group-relative advantage} that requires no learned parameters:
+
+\begin{definition}[GRPO advantage]
+\label{def:grpo-advantage}
+For completion $i$ in a group of $G$ completions with rewards $r_1, \ldots, r_G$, the GRPO advantage is
+\begin{equation}
+\label{eq:grpo-advantage}
+\hat{A}_i = \frac{r_i - \mu_G}{\sigma_G + \varepsilon_0},
+\end{equation}
+where $\mu_G = \frac{1}{G}\sum_{j=1}^G r_j$ is the group mean, $\sigma_G = \sqrt{\frac{1}{G}\sum_{j=1}^G (r_j - \mu_G)^2}$ is the group standard deviation, and $\varepsilon_0 > 0$ is a small constant for numerical stability (typically $10^{-8}$).
+\end{definition}
+
+The advantage $\hat{A}_i$ measures how many standard deviations above or below the group mean the reward of completion $i$ lies.  If all completions in a group receive the same reward (e.g.\ all correct or all incorrect), then $\sigma_G = 0$ and $\hat{A}_i \approx 0$ for all $i$, producing no gradient signal.  This is desirable: a prompt that the model either always solves or never solves provides no contrastive information.
+
+\begin{remark}
+The same advantage $\hat{A}_i$ is assigned to \emph{every token} in completion $i$:
+\[
+\hat{A}_{i,t} = \hat{A}_i \quad \text{for all } t \in \{1, \ldots, |o_i|\}.
+\]
+This is a sequence-level (or outcome-level) advantage, not a per-token advantage.  Unlike GAE, which assigns different advantages to different tokens based on value-function estimates at each step, GRPO attributes the full outcome reward uniformly to all tokens that produced it.  This simplification is both a strength (no critic needed) and a limitation (no credit assignment within a completion).
+\end{remark}
+
+\subsection{The Clipped Surrogate Objective}
+
+\index{GRPO!clipped objective}
+Following PPO (Definition~\ref{def:ppo-clip}), GRPO uses an importance-weighted objective with clipping.  For completion $i$ and token position $t$, define the per-token importance ratio:
+\begin{equation}
+\label{eq:grpo-ratio}
+\rho_{i,t}(\theta) = \frac{\pi_\theta(o_{i,t} \mid q, o_{i,<t})}{\pi_{\theta_\mathrm{old}}(o_{i,t} \mid q, o_{i,<t})}.
+\end{equation}
+The clipped surrogate for this token is
+\begin{equation}
+\label{eq:grpo-clip-token}
+L_{i,t}^{\mathrm{CLIP}}(\theta) = \min\!\Big(\rho_{i,t}(\theta)\,\hat{A}_i,\; \mathrm{clip}\!\big(\rho_{i,t}(\theta),\, 1-\epsilon,\, 1+\epsilon\big)\,\hat{A}_i\Big),
+\end{equation}
+where $\epsilon > 0$ is the clip range (typically $\epsilon \in [0.1, 0.3]$).  The clipping mechanism is identical to PPO's: it caps the incentive to increase the probability of positively-advantaged completions and caps the incentive to decrease the probability of negatively-advantaged completions, preventing destabilisingly large policy steps.
+
+\subsection{The KL Penalty}
+
+\index{GRPO!KL penalty}
+GRPO adds a Kullback--Leibler divergence penalty directly to the loss, rather than incorporating it into the reward as PPO does (Equation~\eqref{eq:rlhf-reward}).  This design separates the KL regularisation from the advantage computation, avoiding complications in the group normalisation.  The per-token KL estimate used in practice is
+\begin{equation}
+\label{eq:grpo-kl}
+D_{\mathrm{KL}}^{(i,t)} = \frac{\pi_\mathrm{ref}(o_{i,t} \mid q, o_{i,<t})}{\pi_\theta(o_{i,t} \mid q, o_{i,<t})} - \log\frac{\pi_\mathrm{ref}(o_{i,t} \mid q, o_{i,<t})}{\pi_\theta(o_{i,t} \mid q, o_{i,<t})} - 1,
+\end{equation}
+which is the Schulman (2020) unbiased, non-negative estimator of the KL divergence between $\pi_\theta$ and $\pi_\mathrm{ref}$.  This estimator satisfies $D_{\mathrm{KL}}^{(i,t)} \geq 0$ always, with equality if and only if $\pi_\theta(o_{i,t} \mid q, o_{i,<t}) = \pi_\mathrm{ref}(o_{i,t} \mid q, o_{i,<t})$.
+
+\begin{remark}
+An alternative estimator is the simpler $\log[\pi_\theta(o_{i,t} \mid q, o_{i,<t}) / \pi_\mathrm{ref}(o_{i,t} \mid q, o_{i,<t})]$, which is unbiased but can be negative for individual samples.  The estimator in~\eqref{eq:grpo-kl} is preferred because its non-negativity stabilises training.
+\end{remark}
+
+\subsection{Full GRPO Objective}
+
+\index{GRPO!objective}
+Combining the clipped surrogate and the KL penalty, the GRPO objective is:
+
+\begin{definition}[GRPO objective]
+\label{def:grpo-objective}
+\begin{equation}
+\label{eq:grpo-objective}
+\boxed{
+J_{\mathrm{GRPO}}(\theta)
+= \E_{\substack{q \sim \mathcal{D} \\ \{o_i\}_{i=1}^G \sim \pi_{\theta_\mathrm{old}}(\cdot|q)}}
+\!\left[
+\frac{1}{G}\sum_{i=1}^{G} \frac{1}{|o_i|}\sum_{t=1}^{|o_i|}
+\Big(
+  L_{i,t}^{\mathrm{CLIP}}(\theta)
+  - \beta\, D_{\mathrm{KL}}^{(i,t)}
+\Big)
+\right],
+}
+\end{equation}
+where $L_{i,t}^{\mathrm{CLIP}}$ is given by~\eqref{eq:grpo-clip-token}, $D_{\mathrm{KL}}^{(i,t)}$ by~\eqref{eq:grpo-kl}, and $\hat{A}_i$ by~\eqref{eq:grpo-advantage}.
+\end{definition}
+
+Several features of this objective merit comment.
+
+\begin{itemize}[leftmargin=*]
+\item The inner sum averages over token positions within each completion.  The normalisation by $1/|o_i|$ prevents long completions from receiving disproportionately large gradient contributions.
+\item The outer sum averages over the $G$ completions in the group.  This is analogous to averaging over $K$ trajectories in a standard policy gradient mini-batch, but here the trajectories share the same prompt.
+\item The KL coefficient $\beta > 0$ controls drift from the reference policy.  Larger $\beta$ constrains the policy more tightly, reducing the risk of reward hacking at the cost of slower learning.
+\item When multiple gradient steps are taken on the same batch of completions, $\pi_{\theta_\mathrm{old}}$ is held fixed at the policy that generated the completions, and only $\pi_\theta$ is updated.  This is the same off-policy correction as in PPO.
+\end{itemize}
+
+\begin{proposition}[Local gradient equivalence]
+\label{prop:grpo-local-gradient}
+At $\theta = \theta_\mathrm{old}$, the gradient of $J_{\mathrm{GRPO}}(\theta)$ with respect to $\theta$ equals the REINFORCE policy gradient with the group-mean baseline:
+\begin{equation}
+\label{eq:grpo-local-grad}
+\nabla_\theta J_{\mathrm{GRPO}}(\theta)\big|_{\theta = \theta_\mathrm{old}}
+= \frac{1}{G}\sum_{i=1}^G \hat{A}_i \sum_{t=1}^{|o_i|} \frac{1}{|o_i|}\nabla_\theta \log \pi_\theta(o_{i,t} \mid q, o_{i,<t})\Big|_{\theta_\mathrm{old}}
+- \beta\,\nabla_\theta D_{\mathrm{KL}}.
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+At $\theta = \theta_\mathrm{old}$, the importance ratio $\rho_{i,t}(\theta) = 1$ for all $i, t$.  Since $1 \in [1-\epsilon, 1+\epsilon]$, the clip is inactive, so $L_{i,t}^{\mathrm{CLIP}} = \rho_{i,t}\hat{A}_i$.  Differentiating $\rho_{i,t}\hat{A}_i$ with respect to $\theta$ at $\rho_{i,t} = 1$ gives $\hat{A}_i \nabla_\theta \log \pi_\theta(o_{i,t} \mid q, o_{i,<t})$, exactly the REINFORCE gradient weighted by the group-normalised advantage.
+\end{proof}
+
+% ===========================================================
+\section{The GRPO Algorithm}
+\label{sec:grpo-algorithm}
+
+Algorithm~\ref{alg:grpo} summarises the GRPO training loop.
+
+\begin{algorithm}[ht]
+\caption{Group Relative Policy Optimisation (GRPO)}
+\label{alg:grpo}
+\DontPrintSemicolon
+\KwIn{Policy $\pi_\theta$, reference policy $\pi_\mathrm{ref}$, reward function $r$, prompt dataset $\mathcal{D}$}
+\KwIn{Group size $G$, clip range $\epsilon$, KL coefficient $\beta$, learning rate $\alpha$, inner epochs $K_e$}
+\KwOut{Trained policy $\pi_\theta$}
+Initialise $\pi_\theta \leftarrow \pi_\mathrm{ref}$\;
+\Repeat{convergence}{
+  Sample a batch of prompts $\{q^{(1)}, \ldots, q^{(B)}\}$ from $\mathcal{D}$\;
+  \tcp{Generation phase}
+  \For{each prompt $q^{(b)}$, $b = 1, \ldots, B$}{
+    Sample $G$ completions $o_1^{(b)}, \ldots, o_G^{(b)} \sim \pi_\theta(\cdot \mid q^{(b)})$\;
+    Compute rewards $r_i^{(b)} \leftarrow r(q^{(b)}, o_i^{(b)})$ for $i = 1, \ldots, G$\;
+    Compute group mean $\mu_G^{(b)} \leftarrow \frac{1}{G}\sum_{i=1}^G r_i^{(b)}$ and std $\sigma_G^{(b)}$\;
+    Compute advantages $\hat{A}_i^{(b)} \leftarrow (r_i^{(b)} - \mu_G^{(b)}) / (\sigma_G^{(b)} + \varepsilon_0)$ for $i = 1, \ldots, G$\;
+    Store log-probabilities $\log \pi_{\theta_\mathrm{old}}(o_{i,t}^{(b)} \mid q^{(b)}, o_{i,<t}^{(b)})$ for all $i, t$\;
+  }
+  \tcp{Training phase}
+  Fix $\theta_\mathrm{old} \leftarrow \theta$\;
+  \For{epoch $= 1, \ldots, K_e$}{
+    \For{each mini-batch of prompt-completion pairs}{
+      Compute $\rho_{i,t} \leftarrow \pi_\theta(o_{i,t} \mid q, o_{i,<t})\, /\, \pi_{\theta_\mathrm{old}}(o_{i,t} \mid q, o_{i,<t})$ for all $i, t$\;
+      Compute clipped objectives $L_{i,t}^{\mathrm{CLIP}}$ via~\eqref{eq:grpo-clip-token}\;
+      Compute KL penalties $D_{\mathrm{KL}}^{(i,t)}$ via~\eqref{eq:grpo-kl}\;
+      Compute loss $\mathcal{L} \leftarrow -\frac{1}{|\text{batch}|}\sum_{i}\frac{1}{|o_i|}\sum_t (L_{i,t}^{\mathrm{CLIP}} - \beta\, D_{\mathrm{KL}}^{(i,t)})$\;
+      $\theta \leftarrow \theta - \alpha\,\nabla_\theta \mathcal{L}$\;
+    }
+  }
+  \tcp{Optionally update reference model}
+  Every $N_\mathrm{ref}$ steps: $\pi_\mathrm{ref} \leftarrow \pi_\theta$\;
+}
+\Return $\pi_\theta$
+\end{algorithm}
+
+\subsection{Key Hyperparameters}
+
+\begin{description}[leftmargin=!,labelwidth=3.5cm]
+  \item[Group size $G$] The number of completions per prompt.  Typical values are $G \in \{4, 8, 16, 64\}$.  Larger $G$ provides lower-variance advantage estimates but increases generation cost linearly.  DeepSeek-R1 uses $G = 64$ during early training.
+  \item[Clip range $\epsilon$] Controls the trust region.  Standard choice is $\epsilon = 0.2$, the same as PPO.
+  \item[KL coefficient $\beta$] Controls drift from the reference.  Common values range from $\beta = 0.01$ (loose) to $\beta = 0.1$ (tight).  Some implementations use a dynamic $\beta$ with a target KL budget.
+  \item[Inner epochs $K_e$] The number of gradient steps per batch of generated completions.  DeepSeek-R1 uses $K_e = 1$ (a single pass through each batch), which is more conservative than PPO's typical $K_e \in [3, 10]$.
+  \item[Reference update frequency $N_\mathrm{ref}$] How often the reference model is replaced by the current policy.  DeepSeek-R1 updates every 400 steps.  Frequent updates allow the KL penalty to adapt to the improved policy; infrequent updates provide a more stable anchor.
+\end{description}
+
+\subsection{Worked Example}
+
+\begin{example}[GRPO advantage computation]
+\label{ex:grpo-advantage}
+Consider a prompt $q$ = ``What is $\int_0^1 x^2\,dx$?'' with $G = 4$ completions:
+\begin{center}
+{\footnotesize
+\begin{tabular}{@{}clcc@{}}
+\toprule
+$i$ & Completion & $r_i$ & $\hat{A}_i$ \\
+\midrule
+1 & ``$\frac{1}{3}$. We integrate $x^2$ to get $\frac{x^3}{3}$\ldots'' (correct) & 1.0 & $+0.94$ \\
+2 & ``$\frac{1}{2}$. The integral is $\frac{x^2}{2}$\ldots'' (incorrect) & 0.0 & $-1.09$ \\
+3 & ``$1/3$. By the power rule\ldots'' (correct) & 1.0 & $+0.94$ \\
+4 & ``I don't know.'' (incorrect) & 0.0 & $-1.09$ \\
+\bottomrule
+\end{tabular}
+}
+\end{center}
+The group statistics are $\mu_G = 0.5$ and $\sigma_G \approx 0.577$.  By~\eqref{eq:grpo-advantage}: $\hat{A}_1 = (1.0 - 0.5)/0.577 \approx +0.87$; $\hat{A}_2 = (0.0 - 0.5)/0.577 \approx -0.87$.  (The values in the table use the population standard deviation with Bessel's correction for illustration.)  The positive advantages reinforce the correct completions, and the negative advantages suppress the incorrect ones.  No critic was needed.\qed
+\end{example}
+
+% ===========================================================
+\section{Theoretical Analysis}
+\label{sec:grpo-theory}
+
+\subsection{Connection to REINFORCE with Baseline}
+
+\index{GRPO!connection to REINFORCE}
+Proposition~\ref{prop:grpo-local-gradient} showed that the GRPO gradient at $\theta = \theta_\mathrm{old}$ reduces to REINFORCE with the group mean as baseline.  To make this precise, consider the ``unclipped GRPO'' objective (setting $\epsilon \to \infty$):
+\begin{equation}
+\label{eq:grpo-unclipped}
+J_{\mathrm{GRPO}}^{\text{no-clip}}(\theta) = \frac{1}{G}\sum_{i=1}^G \hat{A}_i \cdot \frac{1}{|o_i|}\sum_{t=1}^{|o_i|} \log \pi_\theta(o_{i,t} \mid q, o_{i,<t}) - \beta\, \hat{D}_\mathrm{KL}.
+\end{equation}
+Ignoring the $1/|o_i|$ normalisation and the KL term, the first part is
+\[
+\frac{1}{G}\sum_{i=1}^G \frac{r_i - \mu_G}{\sigma_G} \log \pi_\theta(o_i \mid q)
+= \frac{1}{\sigma_G}\left[\frac{1}{G}\sum_{i=1}^G r_i \log \pi_\theta(o_i \mid q) - \mu_G \cdot \frac{1}{G}\sum_{i=1}^G \log \pi_\theta(o_i \mid q)\right].
+\]
+The first term is the standard REINFORCE estimator.  The second term subtracts the group-mean baseline $\mu_G$ times the average log-probability.  The $1/\sigma_G$ factor rescales the entire gradient, affecting the effective learning rate but not the direction.
+
+\begin{theorem}[Unbiasedness of the group-mean baseline]
+\label{thm:grpo-unbiased}
+\index{GRPO!unbiasedness}
+The GRPO gradient estimator (without clipping and length normalisation) is an unbiased estimator of the policy gradient $\nabla_\theta J(\theta)$, up to a prompt-dependent scaling factor $1/\sigma_G$.
+\end{theorem}
+
+\begin{proof}
+The group-mean baseline $\mu_G = \frac{1}{G}\sum_{j=1}^G r_j$ includes the reward $r_i$ of the $i$-th sample itself.  Unlike the RLOO baseline (Equation~\eqref{eq:rloo-baseline}), this makes $\mu_G$ \emph{weakly} dependent on $o_i$.  However, the bias introduced is small.  Write $\mu_G = \frac{r_i}{G} + \frac{1}{G}\sum_{j \neq i} r_j$.  The second term $b_i' = \frac{1}{G}\sum_{j \neq i} r_j$ is independent of $o_i$ given $q$, and hence is a valid baseline by the baseline theorem (Theorem~\ref{thm:baseline}).  The additional $r_i / G$ term introduces a bias of order $O(1/G)$:
+\[
+\E\!\left[\frac{r_i}{G} \nabla_\theta \log \pi_\theta(o_i \mid q)\right] = \frac{1}{G}\nabla_\theta J(\theta),
+\]
+which is a scaled version of the true gradient.  After subtracting from the $r_i \nabla_\theta \log \pi_\theta$ term, the net effect is that the GRPO estimator approximates $(1 - 1/G)\nabla_\theta J(\theta)$\,---\,biased by a factor of $(G-1)/G$, which is negligible for $G \geq 4$.  The division by $\sigma_G$ is a prompt-dependent scalar and does not affect the direction of the gradient in expectation.
+\end{proof}
+
+\subsection{Comparison with RLOO}
+
+\index{GRPO!vs RLOO}
+Remark~\ref{rem:rloo-grpo} in Chapter~\ref{ch:pg} noted the close relationship between GRPO and RLOO.  Table~\ref{tab:grpo-vs-rloo} makes the comparison explicit.
+
+\begin{table}[ht]
+\centering
+\caption{Comparison of the RLOO and GRPO advantage estimators.}
+\label{tab:grpo-vs-rloo}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Aspect} & \textbf{RLOO} & \textbf{GRPO} \\
+\midrule
+Baseline & Mean of $K-1$ other samples & Mean of all $G$ samples \\
+Normalisation & None (raw deviation) & Divide by $\sigma_G$ \\
+Bias & Exactly unbiased & $O(1/G)$ bias \\
+Clipping & None & PPO-style clipping \\
+KL placement & In the reward & In the loss \\
+Multi-epoch & Not standard & Yes (like PPO) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The RLOO advantage for sample $i$ is $\hat{A}_i^{\mathrm{RLOO}} = \frac{K}{K-1}(r_i - \bar{r})$ (Equation~\eqref{eq:rloo-clean}), where $\bar{r} = \frac{1}{K}\sum_j r_j$.  The GRPO advantage is $\hat{A}_i^{\mathrm{GRPO}} = (r_i - \bar{r}) / \sigma_G$.  The key differences are: (i)~RLOO uses the exact leave-one-out baseline and is exactly unbiased, while GRPO uses the group mean including sample $i$ and introduces $O(1/G)$ bias; (ii)~GRPO divides by $\sigma_G$, which standardises the advantage scale across prompts with different reward variance; (iii)~GRPO applies PPO-style clipping, enabling safe multi-epoch training on the same batch.
+
+\subsection{Variance Reduction from Group Normalisation}
+
+\index{GRPO!variance reduction}
+\begin{proposition}[Variance of the GRPO advantage]
+\label{prop:grpo-variance}
+Let $r_1, \ldots, r_G$ be i.i.d.\ with mean $\mu$ and variance $\sigma^2$.  The variance of the unnormalised advantage $r_i - \mu_G$ is
+\begin{equation}
+\label{eq:grpo-var-unnorm}
+\Var[r_i - \mu_G] = \sigma^2\!\left(1 - \frac{1}{G}\right) = \frac{(G-1)\sigma^2}{G}.
+\end{equation}
+After standardisation by $\sigma_G$, the advantage $\hat{A}_i$ has approximately unit variance regardless of the reward distribution.
+\end{proposition}
+
+\begin{proof}
+Since $\mu_G = \frac{1}{G}\sum_j r_j$, we have $r_i - \mu_G = r_i - \frac{1}{G}r_i - \frac{1}{G}\sum_{j \neq i} r_j = \frac{G-1}{G}r_i - \frac{1}{G}\sum_{j \neq i} r_j$.  Using independence:
+\[
+\Var[r_i - \mu_G] = \left(\frac{G-1}{G}\right)^2 \sigma^2 + \frac{G-1}{G^2}\sigma^2 = \frac{(G-1)\sigma^2}{G}.
+\]
+Dividing by $\sigma_G \approx \sigma\sqrt{(G-1)/G}$ (for large $G$) gives $\Var[\hat{A}_i] \approx 1$.
+\end{proof}
+
+This automatic variance normalisation is a practical advantage of GRPO over RLOO: prompts with high reward variance and prompts with low reward variance contribute gradient updates of similar magnitude, preventing any single prompt from dominating a mini-batch.
+
+\subsection{Effect of Group Size $K$}
+
+\index{GRPO!group size}
+Increasing the group size $G$ has two effects:
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Better baseline estimation.} The group mean $\mu_G$ converges to the true expected reward $\E_{\pi_\theta}[r \mid q]$ at rate $O(1/\sqrt{G})$.  This reduces the variance of the advantage estimate and improves gradient quality.
+  \item \textbf{Higher generation cost.} Each prompt requires $G$ forward passes through the model.  If the model generates $T$ tokens on average, the total generation cost per prompt is $O(GT)$, which can dominate the training cost.
+\end{enumerate}
+The optimal $G$ balances statistical efficiency against computational cost.  Empirically, $G = 8$ to $G = 64$ works well for reasoning tasks.  For binary rewards (correct/incorrect), larger groups are especially beneficial because they provide more diverse contrastive pairs.
+
+\begin{example}[Effect of group size on advantage quality]
+\label{ex:grpo-group-size}
+Suppose a prompt has true expected reward $\mu = 0.3$ (the model solves it 30\% of the time), and rewards are binary $r_i \in \{0, 1\}$.  For $G = 4$, the possible group means are $\mu_G \in \{0, 0.25, 0.5, 0.75, 1\}$.  The probability that $\mu_G = 0$ (all four wrong) is $(0.7)^4 = 0.240$, in which case all advantages are zero and the prompt contributes no learning signal.  For $G = 16$, the probability that all are wrong is $(0.7)^{16} = 0.003$\,---\,negligible.  Larger groups ensure that nearly every prompt contributes contrastive signal.\qed
+\end{example}
+
+% ===========================================================
+\section{RLVR: Reinforcement Learning with Verifiable Rewards}
+\label{sec:rlvr}
+
+\index{RLVR!definition}
+
+\subsection{Definition and Motivation}
+
+Many important tasks have the property that the correctness of a response can be verified automatically, without a learned reward model.  Mathematical reasoning (``Is $\frac{1}{3}$ the correct answer to $\int_0^1 x^2\,dx$?''), code generation (``Does this function pass all unit tests?''), and formal logic (``Does this proof type-check?'') all admit deterministic verification.  This class of tasks motivates a distinct training paradigm.
+
+\begin{definition}[RLVR]
+\label{def:rlvr}
+\textbf{Reinforcement Learning with Verifiable Rewards} (RLVR) is a training paradigm in which:
+\begin{enumerate}[leftmargin=*]
+  \item the reward function $r(q, o)$ is a \emph{deterministic verifier}\index{verifier} that checks the correctness of the response $o$ to prompt $q$;
+  \item the verifier returns a binary reward: $r(q, o) \in \{0, 1\}$ (or more generally a rule-based reward);
+  \item no learned reward model is used; the verifier is a fixed, trusted function.
+\end{enumerate}
+\end{definition}
+
+RLVR has several advantages over RLHF with a learned reward model:
+\begin{description}[leftmargin=!,labelwidth=3.5cm]
+  \item[No reward hacking] The verifier is a fixed ground-truth function, not a learned approximation.  The policy cannot find spurious outputs that ``trick'' the verifier (assuming the verifier is correct).
+  \item[Unlimited data] Because the verifier is automated, one can generate and score an unlimited number of completions at no human annotation cost.  This enables much larger-scale online training.
+  \item[Clean signal] Binary rewards are noise-free: a math answer is either right or wrong.  There is no annotator disagreement, no calibration drift, and no subjective judgement.
+  \item[No reward model training] The verifier is a fixed function (e.g.\ a symbolic solver or a test harness), so there is no reward model to train, evaluate, or deploy.
+\end{description}
+
+\subsection{Formal Setup}
+
+In the RLVR setting, the training data consists of a set of prompts $\mathcal{D} = \{q^{(1)}, \ldots, q^{(N)}\}$, each with an associated ground-truth answer $a^{(i)}$.  The verifier $V: (q, o) \to \{0, 1\}$ extracts the model's answer from completion $o$ and compares it with $a^{(i)}$:
+\begin{equation}
+\label{eq:rlvr-reward}
+r(q, o) = V(q, o) = \ind[\text{extract}(o) = a].
+\end{equation}
+More sophisticated verifiers may award partial credit, check intermediate steps, or combine multiple reward signals:
+\begin{equation}
+\label{eq:rlvr-composite}
+r(q, o) = w_\mathrm{acc}\, V_\mathrm{accuracy}(q, o) + w_\mathrm{fmt}\, V_\mathrm{format}(o) + w_\mathrm{len}\, V_\mathrm{length}(o),
+\end{equation}
+where $V_\mathrm{accuracy}$ checks correctness, $V_\mathrm{format}$ checks adherence to a prescribed output format (e.g.\ using \texttt{<think>}\ldots\texttt{</think>} tags), and $V_\mathrm{length}$ penalises excessively long responses.
+
+\subsection{Connection to GRPO}
+
+GRPO is the natural optimisation algorithm for RLVR.  The binary reward structure ensures that groups contain a mixture of correct and incorrect completions (for prompts of moderate difficulty), producing non-trivial advantages.  The absence of a learned reward model means that the two remaining model copies ($\pi_\theta$ and $\pi_\mathrm{ref}$) fit comfortably in GPU memory, and the verifier adds negligible compute overhead.
+
+The DeepSeek-R1 training pipeline (DeepSeek-AI, 2025) demonstrated this combination at scale: GRPO with rule-based binary rewards trained directly on a base language model (without any supervised fine-tuning stage) produced a model that spontaneously developed chain-of-thought reasoning, self-verification, and exploration strategies\,---\,capabilities that emerged from the RL training alone.
+
+\begin{example}[Emergent reasoning in DeepSeek-R1-Zero]
+\label{ex:r1-zero}
+DeepSeek-R1-Zero applied GRPO with binary accuracy rewards to a base language model (no SFT).  During training, the model spontaneously developed several sophisticated behaviours:
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Chain-of-thought reasoning}: the model began producing step-by-step derivations, breaking complex problems into sub-problems.
+  \item \textbf{Self-verification}: the model started checking its own intermediate results, producing phrases like ``Wait, let me verify\ldots'' before finalising an answer.
+  \item \textbf{Exploration of alternative approaches}: when a first approach failed, the model began trying alternative solution strategies within a single response.
+\end{itemize}
+None of these behaviours were explicitly rewarded\,---\,only the final answer's correctness was checked.  They emerged because chain-of-thought responses are more likely to produce correct answers, and GRPO's advantage signal reinforced the entire token sequence that led to correct outcomes.\qed
+\end{example}
+
+\subsection{Domains for RLVR}
+
+\begin{description}[leftmargin=!,labelwidth=3.5cm]
+  \item[Mathematics] Symbolic verification against ground-truth answers.  Tools such as \texttt{sympy}, \texttt{math\_verify}, and \texttt{latex2sympy} parse and compare mathematical expressions.
+  \item[Code generation] Unit-test suites serve as the verifier.  The model generates code; the code is executed in a sandbox; the reward is the fraction of tests passed.
+  \item[Formal proofs] Type-checkers for proof assistants (Lean, Coq, Isabelle) verify proofs deterministically.
+  \item[Constrained generation] Format constraints (e.g.\ JSON schema validation) provide binary feedback on structural correctness.
+  \item[Science] Numerical answers in physics, chemistry, and engineering can be verified within a tolerance.
+\end{description}
+
+% ===========================================================
+\section{Rejection Sampling and Best-of-$N$}
+\label{sec:rejection-sampling}
+
+\index{rejection sampling}\index{best-of-$N$}
+
+Before deploying GRPO (or any RL algorithm), a natural baseline is \textbf{best-of-$N$} sampling: generate $N$ completions, score each with the verifier or reward model, and return the highest-scoring one.  This is sometimes called \emph{rejection sampling fine-tuning} when the best completions are used as supervised training data.
+
+\subsection{Algorithm}
+
+For each prompt $q$, sample $o_1, \ldots, o_N \sim \pi_\theta(\cdot \mid q)$ and select $o^* = \argmax_{i} r(q, o_i)$.  The expected reward of best-of-$N$ grows with $N$: if each completion has probability $p$ of being correct (binary reward), the probability that at least one of $N$ is correct is $1 - (1-p)^N$.
+
+\begin{example}[Best-of-$N$ vs.\ single sample]
+\label{ex:best-of-n}
+A model solves a given math problem with probability $p = 0.3$.  With a single sample, the expected reward is 0.3.  With $N = 8$, the probability of at least one correct solution is $1 - (0.7)^8 = 0.942$.  With $N = 64$, it rises to $1 - (0.7)^{64} > 0.9999$.  Best-of-$N$ dramatically improves performance at inference time, but the cost scales linearly with $N$.\qed
+\end{example}
+
+\subsection{Rejection Sampling Fine-Tuning}
+
+Rather than using best-of-$N$ only at inference time, one can use the selected completions as SFT training data.  This process, called rejection sampling fine-tuning (RFT), creates an improved dataset from the model's own generations:
+\begin{enumerate}[leftmargin=*]
+  \item Generate $N$ completions per prompt.
+  \item Filter to keep only correct (or high-reward) completions.
+  \item Fine-tune $\pi_\theta$ on the filtered dataset using standard supervised learning.
+\end{enumerate}
+
+\subsection{Comparison with GRPO}
+
+Best-of-$N$ and GRPO are closely related.  Both sample multiple completions and use reward to distinguish good from bad.  The key differences are:
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Signal utilisation.}  Best-of-$N$ discards all information except the single best completion.  GRPO uses the full reward distribution to compute advantages, extracting a contrastive learning signal from every completion.
+  \item \textbf{Gradient quality.}  Best-of-$N$ reduces to SFT on selected examples, which cannot downweight bad responses.  GRPO explicitly pushes down the probability of negatively-advantaged completions.
+  \item \textbf{Iterative improvement.}  Best-of-$N$ with RFT requires alternating generation and SFT stages.  GRPO integrates generation and policy optimisation in a single loop.
+  \item \textbf{When rejection sampling suffices.}  If the model already solves a task with moderate probability ($p \geq 0.3$) and the goal is deployment-time quality, best-of-$N$ at inference may be more cost-effective than RL training.  If the model rarely solves the task ($p < 0.05$) and the goal is to improve the base model, RL training (GRPO) is needed to shift the distribution.
+\end{itemize}
+
+% ===========================================================
+\section{Online RL Training at Scale}
+\label{sec:grpo-scale}
+
+\index{GRPO!training at scale}
+
+\subsection{The Two-Phase Architecture}
+
+Production-scale GRPO training separates the workload into two asynchronous phases:
+\begin{description}[leftmargin=!,labelwidth=3.5cm]
+  \item[Generation phase] Rollout workers host inference copies of the current policy $\pi_\theta$ and generate completions.  This phase is memory-bound (model weights) and latency-sensitive (autoregressive token generation).  Optimised inference engines such as vLLM (Kwon~et~al., 2023) are used to maximise throughput through continuous batching and PagedAttention.
+  \item[Training phase] Trainer workers receive the generated completions, compute advantages, and perform gradient updates.  This phase is compute-bound (forward and backward passes through the full model with gradient computation).
+\end{description}
+The two phases can run in a pipelined fashion: while the trainer updates on batch $k$, rollout workers generate batch $k+1$ using the latest checkpoint.  This overlap hides generation latency and keeps GPU utilisation high.
+
+\subsection{Handling Variable-Length Completions}
+
+A practical challenge is that completions within a group can vary dramatically in length\,---\,from a few tokens (``1/3'') to thousands of tokens (a multi-page chain-of-thought derivation).  Several strategies are used:
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Padding and masking.}  Pad all completions in a group to the maximum length and use attention masks.  Simple but wastes memory on short completions.
+  \item \textbf{Packing.}  Concatenate completions from different prompts into a single sequence, separated by sentinel tokens, and use block-diagonal attention masks to prevent cross-contamination.  This maximises GPU utilisation.
+  \item \textbf{Maximum generation length.}  Enforce a hard cap on completion length.  For reasoning tasks, caps of 4096--8192 tokens are common.
+\end{itemize}
+The $1/|o_i|$ normalisation in the GRPO objective~\eqref{eq:grpo-objective} is essential when completions have variable length: without it, long completions would contribute disproportionately to the loss.
+
+\subsection{Batch Construction}
+
+For GRPO, each ``mini-batch'' consists of prompts, each with $G$ completions.  If the batch contains $B$ prompts, the total number of completions is $BG$.  DeepSeek-R1 uses $BG = 8192$ completions per rollout, which are randomly split into 16 mini-batches of 512 completions for a single training epoch.
+
+The generation cost per iteration scales as $O(BG \cdot \bar{T})$, where $\bar{T}$ is the mean completion length.  For long-form reasoning tasks ($\bar{T} \approx 2000$ tokens) with $BG = 8192$, this is approximately 16 million tokens per rollout\,---\,a substantial inference workload that motivates the use of dedicated inference clusters.
+
+\subsection{Synchronous vs.\ Asynchronous Design}
+
+In a \textbf{synchronous} design, the trainer waits for all rollout workers to finish generating before starting the training phase.  This guarantees that all completions are from the same policy checkpoint, making the importance ratios $\rho_{i,t} = 1$ at the start of each training phase.  The downside is idle time: trainers wait during generation, and rollout workers wait during training.
+
+In an \textbf{asynchronous} design, rollout workers continuously generate completions and push them to a queue, while trainers pull from the queue and update the policy.  The policy used for generation may lag behind the training policy by one or more steps.  This introduces a mild off-policy mismatch, but the clipped importance ratio in GRPO naturally handles this: if $\rho_{i,t}$ deviates too far from 1, the clip caps the gradient contribution, preventing stale data from causing instability.  Asynchronous designs achieve significantly higher GPU utilisation and are preferred at scale.
+
+\subsection{Experience Replay for GRPO}
+
+\index{experience replay!GRPO}
+Unlike PPO, which typically uses on-policy data for a few epochs and then discards it, GRPO can benefit from a lightweight form of experience replay.  Recent completions from the previous $M$ iterations can be stored in a replay buffer and mixed with fresh on-policy data.  The importance ratio $\rho_{i,t}(\theta)$ naturally corrects for the staleness of replayed data, and the clipping mechanism prevents excessive off-policy corrections.  Replay reduces the generation cost by amortising each completion over multiple training steps, at the cost of slightly increased distribution mismatch.
+
+\subsection{Monitoring and Diagnostics}
+
+Effective GRPO training requires monitoring several quantities:
+\begin{description}[leftmargin=!,labelwidth=3.5cm]
+  \item[Reward curve] The mean reward across prompts should increase over training.  A plateau may indicate that the prompt distribution is too easy (all prompts already solved) or too hard (no contrastive signal).
+  \item[KL divergence] The running average of $\KL{\pi_\theta}{\pi_\mathrm{ref}}$ should grow slowly.  Rapid KL increase signals that the policy is drifting dangerously far from the reference; increase $\beta$ or reduce the learning rate.
+  \item[Clip fraction] The fraction of tokens where the importance ratio $\rho_{i,t}$ is clipped.  A clip fraction above 10--15\% suggests the policy is changing too quickly per iteration; consider reducing the learning rate or the number of inner epochs $K_e$.
+  \item[Group diversity] The fraction of groups containing both positive and negative advantages.  If this fraction drops below 20\%, the prompts may be too easy or too hard, and the prompt distribution should be rebalanced.
+  \item[Advantage magnitude] The mean absolute advantage $|\hat{A}_i|$ should be roughly 1 (by construction, due to standardisation).  Extreme values indicate numerical issues in the normalisation.
+\end{description}
+
+% ===========================================================
+\section{Comparison: PPO vs GRPO vs DPO}
+\label{sec:grpo-comparison}
+
+Table~\ref{tab:ppo-grpo-dpo} provides a detailed comparison of the three principal alignment and RL algorithms discussed in Chapters~\ref{ch:actor-critic}, \ref{ch:dpo}, and the present chapter.
+
+\begin{table}[ht]
+\centering
+\caption{Detailed comparison of PPO, GRPO, and DPO for LLM training.}
+\label{tab:ppo-grpo-dpo}
+\footnotesize
+\begin{tabular}{@{}lp{3.2cm}p{3.2cm}p{3.2cm}@{}}
+\toprule
+\textbf{Property} & \textbf{PPO} (Ch.~\ref{ch:actor-critic}) & \textbf{GRPO} (this chapter) & \textbf{DPO} (Ch.~\ref{ch:dpo}) \\
+\midrule
+Online / offline & Online & Online & Offline \\
+Critic needed? & Yes (value network) & No & No \\
+Reward model? & Yes (learned RM) & Verifier or RM & No (implicit in loss) \\
+Model copies & 4 (actor, critic, ref, RM) & 2 (actor, ref) & 2 (actor, ref) \\
+Advantage estimation & GAE (per-token) & Group normalisation (per-sequence) & N/A (no advantage) \\
+Trust region & Clipped ratio & Clipped ratio & KL-implicit \\
+Data requirement & Prompts only & Prompts only & Preference pairs \\
+Exploration & On-policy sampling & On-policy sampling & None (fixed dataset) \\
+Distribution shift & None & None & Yes (degrades over time) \\
+Credit assignment & Per-token & Per-sequence & Per-pair \\
+Reward hacking risk & High (learned RM) & Low (verifier) & None (no RM) \\
+Implementation complexity & High & Medium & Low \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{When to Use Each Method}
+
+\textbf{Use PPO} when the reward signal comes from a learned reward model and per-token credit assignment is important\,---\,for example, in general RLHF where the quality of individual tokens affects the overall response.  PPO's GAE-based advantages provide fine-grained signal, but the infrastructure cost is high.
+
+\textbf{Use GRPO} when rewards are verifiable or when simplicity and memory efficiency are priorities.  GRPO is the algorithm of choice for reasoning tasks (math, code, logic) where binary correctness rewards are available.  It is also effective with learned reward models when the cost of a critic is prohibitive.
+
+\textbf{Use DPO} when preference data is available but online generation is too expensive or impractical.  DPO is the fastest path from an SFT model to an aligned model, requiring no RL infrastructure.  For tasks where distribution shift is a concern, iterative DPO (collecting new preference data between rounds) partially closes the gap.
+
+\begin{remark}
+These methods are not mutually exclusive.  A common production pattern is to bootstrap with DPO on an existing preference dataset, then refine with GRPO on verifiable tasks, and finally polish with PPO using a learned reward model for open-ended quality.  Each stage addresses a different dimension of alignment (see Example~\ref{ex:alignment-choice} in Chapter~\ref{ch:dpo}).
+\end{remark}
+
+\begin{example}[Memory budget at 70B scale]
+\label{ex:grpo-memory}
+Consider training a 70B-parameter model in half-precision (2 bytes per parameter, so 140\,GB per model copy).  PPO-RLHF requires four copies: actor (140\,GB), critic (140\,GB), reference (140\,GB), and reward model (140\,GB), totalling 560\,GB before accounting for optimiser states, activations, or gradients.  A single 8$\times$A100 node (640\,GB total) barely fits the models, leaving almost no room for activations.
+
+GRPO-RLVR requires two copies: actor (140\,GB) and reference (140\,GB), totalling 280\,GB.  The verifier (e.g.\ a symbolic math checker) is negligible.  This leaves 360\,GB on the same node for optimiser states and activations\,---\,enough for comfortable training with gradient checkpointing.  The 2$\times$ memory reduction is often the decisive factor in choosing GRPO over PPO at large scale.\qed
+\end{example}
+
+% ===========================================================
+\section{Summary}
+\label{sec:grpo-summary}
+
+This chapter developed Group Relative Policy Optimisation (GRPO), a policy gradient algorithm that eliminates the value-function critic by estimating advantages from groups of sampled completions.
+
+The GRPO advantage (Definition~\ref{def:grpo-advantage}) standardises each completion's reward relative to the group mean and standard deviation, producing a zero-mean, approximately unit-variance signal that requires no learned parameters.  The clipped surrogate objective (Equation~\eqref{eq:grpo-clip-token}) inherits PPO's trust-region property, enabling safe multi-epoch training.  The KL penalty (Equation~\eqref{eq:grpo-kl}) is applied directly in the loss rather than in the reward, cleanly separating regularisation from advantage computation.
+
+The theoretical analysis (Section~\ref{sec:grpo-theory}) showed that GRPO's gradient is closely related to REINFORCE with a group-mean baseline, with $O(1/G)$ bias that vanishes for moderate group sizes.  The standardisation by $\sigma_G$ automatically normalises gradient magnitudes across prompts with different reward variances, a practical advantage over RLOO (Section~\ref{sec:rloo} of Chapter~\ref{ch:pg}).
+
+RLVR (Section~\ref{sec:rlvr}) formalised the paradigm of training with deterministic verifiers rather than learned reward models.  The combination of GRPO and RLVR enables large-scale online RL with clean reward signals, no reward hacking, and minimal infrastructure overhead\,---\,the configuration that produced DeepSeek-R1 and similar reasoning models.
+
+The comparison table (Table~\ref{tab:ppo-grpo-dpo}) placed GRPO in context: it occupies the online, critic-free region of the design space, complementing PPO (online, critic-based) and DPO (offline, critic-free).
+
+\begin{description}[leftmargin=!,labelwidth=3.5cm]
+  \item[Chapter~\ref{ch:pg}] provides the foundational REINFORCE estimator and the RLOO baseline that GRPO builds upon.
+  \item[Chapter~\ref{ch:actor-critic}] develops PPO, the algorithm whose clipped surrogate GRPO inherits but whose critic it eliminates.
+  \item[Chapter~\ref{ch:dpo}] develops DPO, the offline alternative whose distribution shift problem motivates GRPO's online approach.
+  \item[Chapter~\ref{ch:practical-rlhf}] describes the full RLHF production pipeline, where GRPO can replace PPO as the RL optimiser.
+\end{description}
+
+% ===========================================================
+\section*{Exercises}
+\addcontentsline{toc}{section}{Exercises}
+
+\begin{exercise}
+\label{ex:grpo-1}
+\textbf{GRPO advantage by hand.}  A prompt is answered with $G = 5$ completions receiving rewards $r = (0, 1, 1, 0, 1)$.  Compute the group mean $\mu_G$, the group standard deviation $\sigma_G$, and the GRPO advantage $\hat{A}_i$ for each completion.  Verify that $\sum_i \hat{A}_i \neq 0$ but $\sum_i \hat{A}_i \approx 0$ (explain why exact zero is not guaranteed when using the full-group mean).
+\end{exercise}
+
+\begin{exercise}
+\label{ex:grpo-2}
+\textbf{GRPO vs RLOO.}  Using the rewards from Exercise~\ref{ex:grpo-1}, compute the RLOO advantage $\hat{A}_i^{\mathrm{RLOO}} = \frac{K}{K-1}(r_i - \bar{r})$ for each completion.  Compare the two sets of advantages.  Under what condition on the reward distribution would the two estimators give the same \emph{direction} of gradient?
+\end{exercise}
+
+\begin{exercise}
+\label{ex:grpo-3}
+\textbf{Degenerate groups.}  What happens to the GRPO advantage when all completions in a group receive the same reward?  Why is this behaviour desirable from a learning perspective?  Propose a modification that would still extract signal from such groups.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:grpo-4}
+\textbf{Bias of the group-mean baseline.}  Prove that the bias of using $\mu_G = \frac{1}{G}\sum_j r_j$ as a baseline (instead of the leave-one-out mean) in the REINFORCE estimator is exactly $\frac{1}{G}\nabla_\theta J(\theta)$.  Conclude that the bias vanishes as $G \to \infty$.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:grpo-5}
+\textbf{Best-of-$N$ probability.}  A model has per-sample accuracy $p$ on a given task.  Derive the expected reward (accuracy) of best-of-$N$ sampling as a function of $p$ and $N$.  For $p = 0.1$, compute the value of $N$ needed to achieve 90\% expected accuracy.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:grpo-6}
+\textbf{KL estimator properties.}  Show that the GRPO KL estimator~\eqref{eq:grpo-kl} is non-negative and equals zero if and only if $\pi_\theta = \pi_\mathrm{ref}$ at that token position.  \emph{Hint:} use the inequality $e^x \geq 1 + x$.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:grpo-7}
+\textbf{Group size and coverage.}  For binary rewards with per-sample accuracy $p$, derive the probability that a group of size $G$ contains \emph{both} correct and incorrect completions (i.e.\ produces a non-trivial contrastive signal).  Plot this probability as a function of $G$ for $p \in \{0.1, 0.3, 0.5, 0.7, 0.9\}$.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:grpo-8}
+\textbf{GRPO with process reward.}  The standard GRPO assigns the same advantage to every token in a completion (outcome supervision).  Suppose a process verifier assigns a reward $r_i^{(t)}$ after each reasoning step $t$.  Propose a modification to the GRPO advantage that incorporates step-level rewards while still avoiding a learned critic.  Write the modified objective.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:grpo-9}
+\textbf{Rejection sampling vs GRPO efficiency.}  A task has per-sample accuracy $p = 0.2$.  Compare the following two strategies for improving the model: (a)~best-of-$N$ rejection sampling fine-tuning with $N = 16$, training on the correct completions for one epoch; (b)~GRPO with $G = 16$.  Which uses the generated data more efficiently?  Discuss the trade-offs in terms of data utilisation, gradient quality, and compute cost.
+\end{exercise}
+
+\begin{exercise}
+\label{ex:grpo-10}
+\textbf{Implementation.}  Implement a simplified GRPO training loop in PyTorch pseudocode.  Your implementation should: (i)~sample $G$ completions per prompt, (ii)~compute group-normalised advantages, (iii)~compute the clipped surrogate loss, and (iv)~add the KL penalty.  Assume access to \texttt{model.generate()}, \texttt{model.log\_probs()}, \texttt{ref\_model.log\_probs()}, and a \texttt{reward\_fn()}.
+\end{exercise}
