@@ -93,8 +93,8 @@ J_{\mathrm{RLHF}}(\theta)
 \begin{equation}
 \label{eq:rlvr-reward}
 r(x, y) = \begin{cases}
-  1 & \text{если } \textsc{Verify}(x, y) = \textsc{True}, \\
-  0 & \text{иначе.}
+  1 & \mbox{если } \textsc{Verify}(x, y) = \textsc{True}, \\
+  0 & \mbox{иначе.}
 \end{cases}
 \end{equation}
 Функция $\textsc{Verify}$ является предметно-специфической и полностью
@@ -172,7 +172,7 @@ J_{\mathrm{RLVR}}(\theta)
 Риск сверхоптимизации & Высокий & Пренебрежимо мал \\
 Необходимость штрафа KL & Критическая & Необязательна \\
 Применимые области & Общие & Верифицируемые области \\
-Стоимость модели вознаграждения & $O(\text{длина ответа})$ & $O(\text{проверочная функция})$ \\
+Стоимость модели вознаграждения & $O(\mbox{длина ответа})$ & $O(\mbox{проверочная функция})$ \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -309,8 +309,8 @@ q(z; x, a^*) = \Prob(a^* \mid x, z).
 \begin{equation}
 \label{eq:thinking-format}
 y = \underbrace{\texttt{<thinking>}\; z_1 z_2 \cdots z_T
-                \;\texttt{</thinking>}}_{\text{след рассуждений, не показывается пользователю}}
-    \;\;\underbrace{a_1 a_2 \cdots a_K}_{\text{финальный ответ}}.
+                \;\texttt{</thinking>}}_{\mbox{след рассуждений, не показывается пользователю}}
+    \;\;\underbrace{a_1 a_2 \cdots a_K}_{\mbox{финальный ответ}}.
 \end{equation}
 Последовательность токенов $z_1, \ldots, z_T$ иногда называется
 \emph{черновиком}\index{scratchpad}. Для простого арифметического
@@ -663,8 +663,8 @@ $c(B) \propto B$ (где $B$~--- токенный бюджет на развёр
 Это качественное расширение парадигмы генерации:
 \begin{equation}
 \label{eq:tool-loop}
-x \;\longrightarrow\; (z_1, \underbrace{f_1(q_1)}_{\text{вызов инструмента}},
-r_1, z_2, \underbrace{f_2(q_2)}_{\text{вызов инструмента}}, r_2, \ldots, a),
+x \;\longrightarrow\; (z_1, \underbrace{f_1(q_1)}_{\mbox{вызов инструмента}},
+r_1, z_2, \underbrace{f_2(q_2)}_{\mbox{вызов инструмента}}, r_2, \ldots, a),
 \end{equation}
 где $f_i$~--- инструмент (например, API веб-поиска или интерпретатор Python),
 $q_i$~--- запрос, который модель отправляет ему, $r_i$~--- возвращённый результат,

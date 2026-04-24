@@ -119,7 +119,7 @@ o_1, o_2, \ldots, o_G \;\sim\; \pi_{\theta_\mathrm{old}}(\cdot \mid q),
 \begin{remark}
 Одно и то же преимущество $\hat{A}_i$ присваивается \emph{каждому токену} в завершении $i$:
 \[
-\hat{A}_{i,t} = \hat{A}_i \quad \text{для всех } t \in \{1, \ldots, |o_i|\}.
+\hat{A}_{i,t} = \hat{A}_i \quad \mbox{для всех } t \in \{1, \ldots, |o_i|\}.
 \]
 Это преимущество на уровне последовательности (или уровне результата), а не на уровне токена. В отличие от GAE, который присваивает разные преимущества разным токенам на основе оценок функции ценности на каждом шаге, GRPO равномерно приписывает итоговое вознаграждение всем токенам, которые его произвели. Это упрощение является одновременно достоинством (критик не нужен) и ограничением (нет присваивания заслуг внутри завершения).
 \end{remark}
@@ -232,7 +232,7 @@ J_{\mathrm{GRPO}}(\theta)
       Вычислить $\rho_{i,t} \leftarrow \pi_\theta(o_{i,t} \mid q, o_{i,<t})\, /\, \pi_{\theta_\mathrm{old}}(o_{i,t} \mid q, o_{i,<t})$ для всех $i, t$\;
       Вычислить отсечённые цели $L_{i,t}^{\mathrm{CLIP}}$ по~\eqref{eq:grpo-clip-token}\;
       Вычислить штрафы KL $D_{\mathrm{KL}}^{(i,t)}$ по~\eqref{eq:grpo-kl}\;
-      Вычислить потерю $\mathcal{L} \leftarrow -\frac{1}{|\text{батч}|}\sum_{i}\frac{1}{|o_i|}\sum_t (L_{i,t}^{\mathrm{CLIP}} - \beta\, D_{\mathrm{KL}}^{(i,t)})$\;
+      Вычислить потерю $\mathcal{L} \leftarrow -\frac{1}{|\mbox{батч}|}\sum_{i}\frac{1}{|o_i|}\sum_t (L_{i,t}^{\mathrm{CLIP}} - \beta\, D_{\mathrm{KL}}^{(i,t)})$\;
       $\theta \leftarrow \theta - \alpha\,\nabla_\theta \mathcal{L}$\;
     }
   }
@@ -284,7 +284,7 @@ $i$ & Завершение & $r_i$ & $\hat{A}_i$ \\
 В утверждении~\ref{prop:grpo-local-gradient} было показано, что при $\theta = \theta_\mathrm{old}$ градиент GRPO сводится к REINFORCE со средним по группе в качестве базиса. Для точности рассмотрим «неотсечённую GRPO» (при $\epsilon \to \infty$):
 \begin{equation}
 \label{eq:grpo-unclipped}
-J_{\mathrm{GRPO}}^{\text{без отсечения}}(\theta) = \frac{1}{G}\sum_{i=1}^G \hat{A}_i \cdot \frac{1}{|o_i|}\sum_{t=1}^{|o_i|} \log \pi_\theta(o_{i,t} \mid q, o_{i,<t}) - \beta\, \hat{D}_\mathrm{KL}.
+J_{\mathrm{GRPO}}^{\mbox{без отсечения}}(\theta) = \frac{1}{G}\sum_{i=1}^G \hat{A}_i \cdot \frac{1}{|o_i|}\sum_{t=1}^{|o_i|} \log \pi_\theta(o_{i,t} \mid q, o_{i,<t}) - \beta\, \hat{D}_\mathrm{KL}.
 \end{equation}
 Игнорируя нормировку $1/|o_i|$ и член KL, первая часть равна
 \[

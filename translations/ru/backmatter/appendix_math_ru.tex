@@ -146,8 +146,8 @@ $\theta^*$ является \textbf{критической точкой} $f$, е
 \begin{definition}[Математическое ожидание и дисперсия]
 \label{def:expectation}
 \[
-    \E[X] = \sum_x x\,p(x) \quad\text{(дискретный случай)}, \qquad
-    \E[X] = \int x\,p(x)\,dx \quad\text{(непрерывный случай)}.
+    \E[X] = \sum_x x\,p(x) \quad\mbox{(дискретный случай)}, \qquad
+    \E[X] = \int x\,p(x)\,dx \quad\mbox{(непрерывный случай)}.
 \]
 \[
     \Var[X] = \E\!\left[(X - \E[X])^2\right] = \E[X^2] - (\E[X])^2.
@@ -197,7 +197,7 @@ $\theta^*$ является \textbf{критической точкой} $f$, е
 \label{thm:lln}
 Пусть $X_1, X_2, \ldots$~--- н.о.р. с математическим ожиданием $\mu$. Тогда при $n \to \infty$:
 \[
-    \bar{X}_n = \frac{1}{n}\sum_{i=1}^n X_i \xrightarrow{\,\text{п.н.}\,} \mu.
+    \bar{X}_n = \frac{1}{n}\sum_{i=1}^n X_i \xrightarrow{\,\mbox{п.н.}\,} \mu.
 \]
 \end{theorem}
 
@@ -330,7 +330,7 @@ KL-штраф $\beta\,\KL{\pi_\theta}{\pi_\mathrm{ref}}$ в задачах RLHF 
 \label{def:contraction}
 Оператор $T: X \to X$ на метрическом пространстве $(X,d)$ является \textbf{сжимающим}\index{contraction} с модулем $\kappa \in [0,1)$, если
 \[
-    d(Tx, Ty) \leq \kappa\, d(x, y) \quad \text{для всех } x, y \in X.
+    d(Tx, Ty) \leq \kappa\, d(x, y) \quad \mbox{для всех } x, y \in X.
 \]
 \end{definition}
 

@@ -513,8 +513,8 @@ The optimal $n$ depends on the problem: in environments with dense, low-variance
 \begin{tikzpicture}[x=1.1cm, y=1cm, >=stealth,
     box/.style={align=center, font=\small, text width=3.2cm}]
   \draw[->, thick] (0,0) -- (13,0) node[right] {$n$};
-  \foreach \x/\lbl in {1/{n=1}, 6.5/{$1<n<T$}, 12/{$n=T-t$}}{
-    \draw[thick] (\x,0.15) -- (\x,-0.15) node[below=6pt,font=\small]{$\lbl$};
+  \foreach \x/\lbl in {1/{$n=1$}, 6.5/{$1<n<T$}, 12/{$n=T-t$}}{
+    \draw[thick] (\x,0.15) -- (\x,-0.15) node[below=6pt,font=\small]{\lbl};
   }
   \node[above=8pt,font=\bfseries] at (1,0) {TD(0)};
   \node[above=8pt,font=\bfseries] at (6.5,0) {$n$-step TD};
@@ -525,7 +525,7 @@ The optimal $n$ depends on the problem: in environments with dense, low-variance
   \draw[very thin, gray, dashed] (1,-0.2) -- (1,-1.15);
   \draw[very thin, gray, dashed] (6.5,-0.2) -- (6.5,-1.15);
   \draw[very thin, gray, dashed] (12,-0.2) -- (12,-1.15);
-  \draw[->,gray!60] (1,-2.8) -- (12,-2.8)
+  \draw[->,gray!60] (1,-3.3) -- (12,-3.3)
     node[midway,below=4pt,font=\scriptsize,align=center]{increasing $n$: less bootstrap, more real signal};
 \end{tikzpicture}
 \caption{The spectrum of $n$-step TD methods.  TD(0) ($n=1$) and Monte Carlo ($n=T-t$) are the extreme cases.  Intermediate $n$ provides a bias--variance trade-off that can be tuned to the task.}
@@ -887,14 +887,14 @@ The advantage estimate $A_0 = 1.008$ for the first step accounts not only for $\
 
 \subsection{Formal Bias Analysis}
 
-The TD(0) target $R_{t+1}+\gamma V(S_{t+1})$ is biased whenever $V \ne V^\pi$.  We can decompose the bias as follows.  Let $b_t(s) = V(s) - V^\pi(s)$ denote the approximation error.  Then
+The TD(0) target $R_{t+1}+\gamma V_t(S_{t+1})$ is biased whenever $V_t \ne V^\pi$.  We can decompose the bias as follows.  Let $V_t$ denote the value estimate at iteration~$t$ and let $b_t(s) = V_t(s) - V^\pi(s)$ denote the approximation error at iteration~$t$.  Then
 \begin{align*}
-\E_\pi[R_{t+1}+\gamma V(S_{t+1})\mid S_t=s]
-&= V^\pi(s) + \gamma\,\E_\pi[b_t(S_{t+1})\mid S_t=s].
+\E_\pi[R_{t+1}+\gamma V_t(S_{t+1})\mid S_t=s]
+&= V^\pi(s) + \gamma\,\E_\pi[b_t(S_{t+1})\mid S_t=s],
 \end{align*}
-So the bias of the TD target equals $\gamma$ times the expected approximation error at the next state.  This is strictly smaller than the approximation error at $s$ in magnitude (scaled by $\gamma < 1$), which is the mechanism by which TD updates are pulled toward $V^\pi$.  As $V\to V^\pi$, the bias vanishes, consistent with Theorem~\ref{thm:td-error-zero-mean}.
+So the bias of the TD target equals $\gamma$ times the expected approximation error at the next state.  This is strictly smaller than the approximation error at $s$ in magnitude (scaled by $\gamma < 1$), which is the mechanism by which TD updates are pulled toward $V^\pi$.  As $V_t\to V^\pi$, the bias vanishes, consistent with Theorem~\ref{thm:td-error-zero-mean}.
 
-Monte Carlo, on the other hand, uses the unbiased target $G_t$, so its bias is zero regardless of $V$.
+Monte Carlo, on the other hand, uses the unbiased target $G_t$, so its bias is zero regardless of $V_t$.
 
 \subsection{Variance Analysis}
 
@@ -902,9 +902,9 @@ The variance of the TD(0) target $R_{t+1}+\gamma V(S_{t+1})$ is bounded by
 \[
 \Var[R_{t+1}+\gamma V(S_{t+1})\mid S_t=s] \le \sigma_R^2 + \gamma^2\,\Var[V(S_{t+1})\mid S_t=s],
 \]
-where $\sigma_R^2$ is the reward variance.  When $V$ is a smooth function (e.g.\ a neural network), $\Var[V(S_{t+1})]$ is small.  In contrast, the MC return $G_t = \sum_{k=0}^{\infty}\gamma^k R_{t+k+1}$ accumulates variance from every step:
+where $\sigma_R^2$ is the reward variance.  When $V$ is a smooth function (e.g.\ a neural network), $\Var[V(S_{t+1})]$ is small.  In contrast, the MC return $G_t = \sum_{k=0}^{\infty}\gamma^k R_{t+k+1}$ accumulates variance from every step.  Since rewards at different time steps are generally correlated through the shared trajectory, the full expression includes cross-covariance terms:
 \[
-\Var[G_t\mid S_t=s] = \sum_{k=0}^{\infty}\gamma^{2k}\Var[R_{t+k+1}\mid \ldots] \gg \Var[R_{t+1}+\gamma V(S_{t+1})].
+\Var[G_t\mid S_t=s] = \sum_{k=0}^{\infty}\gamma^{2k}\Var[R_{t+k+1}\mid S_t=s] + 2\!\!\sum_{0\le j<k}\!\!\gamma^{j+k}\Cov[R_{t+j+1},R_{t+k+1}\mid S_t=s] \;\gg\; \Var[R_{t+1}+\gamma V(S_{t+1})].
 \]
 This variance gap grows with episode length and discount, making TD methods substantially more sample-efficient than MC in many practical settings.
 

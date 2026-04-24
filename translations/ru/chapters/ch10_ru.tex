@@ -312,7 +312,7 @@ $\mathcal{L} = -\log\sigma(\Delta)$. Дифференцируя по $\Delta$: $
 \index{outcome reward model (ORM)}
 \textbf{Модель вознаграждения по исходам} (ORM) --- это функция вознаграждения $r_{\mathrm{ORM}} : \mathcal{X} \times \mathcal{Y} \to \R$, присваивающая скаляр полному ответу $y$, с нулевым вознаграждением на каждом промежуточном шаге генерации:
 \[
-R_t = 0 \text{ при } t < T, \qquad R_T = r_{\mathrm{ORM}}(x, y).
+R_t = 0 \mbox{ при } t < T, \qquad R_T = r_{\mathrm{ORM}}(x, y).
 \]
 \end{definition}
 
@@ -348,7 +348,7 @@ ORM предпочтительны, когда:
 \index{process reward model (PRM)}
 \textbf{Модель вознаграждения по процессу} (PRM) присваивает скалярную оценку каждому шагу $k = 1, \ldots, K$ многошагового решения $y = (y_1, \ldots, y_K)$:
 \[
-r_{\mathrm{PRM}}(x, y_{1:k}) \in \R \quad \text{для каждого } k = 1, \ldots, K.
+r_{\mathrm{PRM}}(x, y_{1:k}) \in \R \quad \mbox{для каждого } k = 1, \ldots, K.
 \]
 Вознаграждение на шаге $k$ отражает качество или корректность частичного решения $(y_1, \ldots, y_k)$ при промпте $x$.
 \end{definition}
@@ -516,8 +516,8 @@ r_{\mathrm{PRM}}(x, y_{1:k}) \in \R \quad \text{для каждого } k = 1, \
 \index{reward overoptimisation}
 \textbf{Переоптимизация вознаграждения} (или \emph{взлом вознаграждения} в смысле прокси) происходит, когда стратегия $\pi_\theta$ достигает высокого прокси-вознаграждения $\E[r_\psi(x,y)]$, но низкого истинного вознаграждения $\E[r^*(x,y)]$. Она характеризуется существованием KL-бюджета $d^*$ такого, что:
 \begin{align}
-\frac{d}{d\,d}\E[r^*(x,y)] &> 0 \quad \text{при } d < d^*, \\
-\frac{d}{d\,d}\E[r^*(x,y)] &< 0 \quad \text{при } d > d^*,
+\frac{d}{d\,d}\E[r^*(x,y)] &> 0 \quad \mbox{при } d < d^*, \\
+\frac{d}{d\,d}\E[r^*(x,y)] &< 0 \quad \mbox{при } d > d^*,
 \end{align}
 где $d = \KL{\pi_\theta}{\pi_{\mathrm{ref}}}$ измеряет дивергенцию от опорной стратегии.
 \end{definition}

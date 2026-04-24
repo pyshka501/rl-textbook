@@ -474,16 +474,18 @@ Figure~\ref{fig:car-rental} shows schematically how the policy evolves under pol
 
 \begin{figure}[ht]
 \centering
-\begin{tikzpicture}[>=Stealth, scale=0.95,
-  box/.style={draw, minimum width=3.5cm, minimum height=2.4cm, fill=blue!5, align=center, font=\small},
+\begin{tikzpicture}[>=Stealth, scale=0.85,
+  box/.style={draw, minimum width=2.8cm, minimum height=2.2cm, fill=blue!5, align=center, font=\small},
   arr/.style={->, thick}]
 
 \node[box] (pi0) at (0,0) {$\pi_0$: Move 0 cars\\everywhere\\\emph{(do nothing)}};
-\node[box] (pi1) at (4.5,0) {$\pi_1$: Move cars\\from B to A\\\emph{(B has more returns)}};
-\node[box] (pi2) at (9,0) {$\pi_2$: Balanced\\shuttling\\$\approx \pi^*$};
+\node[box] (pi1) at (6,0) {$\pi_1$: Move cars\\from B to A\\\emph{(B has more returns)}};
+\node[box] (pi2) at (12,0) {$\pi_2$: Balanced\\shuttling\\$\approx \pi^*$};
 
-\draw[arr] (pi0) -- node[above, font=\scriptsize]{eval + improve} (pi1);
-\draw[arr] (pi1) -- node[above, font=\scriptsize]{eval + improve} (pi2);
+\draw[arr] (pi0.east) -- (pi1.west);
+\draw[arr] (pi1.east) -- (pi2.west);
+\node[font=\scriptsize, align=center] at ($(pi0.east)!0.5!(pi1.west)+(0,0.45)$) {eval\\+ improve};
+\node[font=\scriptsize, align=center] at ($(pi1.east)!0.5!(pi2.west)+(0,0.45)$) {eval\\+ improve};
 
 \node[below=0.3cm of pi0, font=\scriptsize, align=center] {Iteration 0\\\emph{(random initialisation)}};
 \node[below=0.3cm of pi1, font=\scriptsize, align=center] {Iteration 1};

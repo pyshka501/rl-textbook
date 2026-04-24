@@ -510,17 +510,17 @@ even in the limit of infinite data.
   \coordinate (B) at (T.corner 2);  % bottom-left
   \coordinate (C) at (T.corner 3);  % bottom-right
 
-  \node[label, above=0.25cm of A] {Function\\Approximation};
-  \node[label, below left=0.2cm of B] {Bootstrapping};
-  \node[label, below right=0.2cm of C] {Off-Policy\\Training};
+  \node[label, above=0.45cm of A, align=center] {Function\\Approximation};
+  \node[label, below=0.25cm of B, align=right] {Bootstrapping};
+  \node[label, below=0.25cm of C, align=left] {Off-Policy\\Training};
 
   \node[font=\itshape\small, align=center] at ($(A)!0.5!(B)!0.33!(C)$)
     {Potential\\Divergence};
 
-  % Safe-zone annotations on edges
-  \node[font=\tiny, above right, rotate=60] at ($(A)!0.5!(B)$) {MC (no bootstrap)};
-  \node[font=\tiny, above, rotate=0] at ($(B)!0.5!(C)$) {Tabular (no approx.)};
-  \node[font=\tiny, above left, rotate=-60] at ($(A)!0.5!(C)$) {On-policy TD};
+  % Safe-zone annotations on edges (sloped along each edge)
+  \node[font=\tiny, sloped, above, inner sep=1pt] at ($(A)!0.5!(B)$) {MC (no bootstrap)};
+  \node[font=\tiny, above, inner sep=2pt] at ($(B)!0.5!(C)+(0,0.1)$) {Tabular (no approx.)};
+  \node[font=\tiny, sloped, above, inner sep=1pt] at ($(A)!0.5!(C)$) {On-policy TD};
 \end{tikzpicture}
 \caption{The deadly triad.  Each edge of the triangle is ``safe'': two of the three ingredients
 together are manageable.  Only when all three vertices are active simultaneously does instability
