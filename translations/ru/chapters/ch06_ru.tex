@@ -510,6 +510,7 @@ $n$-шаговая отдача удовлетворяет следующим с
 
 \begin{figure}[ht]
 \centering
+\resizebox{\textwidth}{!}{%
 \begin{tikzpicture}[x=1.1cm, y=1cm, >=stealth,
     box/.style={align=center, font=\footnotesize, text width=3.0cm}]
   \draw[->, thick] (0,0) -- (13,0) node[right] {$n$};
@@ -528,6 +529,7 @@ $n$-шаговая отдача удовлетворяет следующим с
   \draw[->,gray!60] (1,-3.5) -- (12,-3.5)
     node[midway,below=4pt,font=\scriptsize,align=center]{рост $n$: меньше бутстрэппинга, больше реального сигнала};
 \end{tikzpicture}
+}%
 \caption{Спектр $n$-шаговых TD-методов.  TD(0) ($n=1$) и Монте-Карло ($n=T-t$) --- крайние случаи.  Промежуточные $n$ обеспечивают компромисс смещение--дисперсия, настраиваемый под задачу.}
 \label{fig:nstep-spectrum}
 \end{figure}
