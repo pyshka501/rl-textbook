@@ -686,7 +686,7 @@ We now work through a complete example inspired by the student MDP of Sutton and
 A student can be in one of four states:
 \begin{itemize}[leftmargin=*]
   \item $s_1$: \textbf{Class} --- attending lecture.
-  \item $s_2$: \textbf{Рутуб} --- browsing social media.
+  \item $s_2$: \textbf{Rutube} --- browsing social media.
   \item $s_3$: \textbf{Study} --- studying for an exam.
   \item $s_4$: \textbf{Sleep} --- sleeping (terminal / absorbing state).
 \end{itemize}
@@ -701,9 +701,9 @@ The actions and transition dynamics are given in Table~\ref{tab:student-mdp}, an
 State & Action & Next state & Prob.\ $p$ & Reward $r$ \\
 \midrule
 $s_1$ (Class) & attend & $s_3$ (Study) & 1.0 & $-2$ \\
-$s_1$ (Class) & distract & $s_2$ (Рутуб) & 1.0 & $-1$ \\
-$s_2$ (Рутуб) & quit & $s_1$ (Class) & 1.0 & $-1$ \\
-$s_2$ (Рутуб) & keep & $s_2$ (Рутуб) & 1.0 & $-1$ \\
+$s_1$ (Class) & distract & $s_2$ (Rutube) & 1.0 & $-1$ \\
+$s_2$ (Rutube) & quit & $s_1$ (Class) & 1.0 & $-1$ \\
+$s_2$ (Rutube) & keep & $s_2$ (Rutube) & 1.0 & $-1$ \\
 $s_3$ (Study) & pass & $s_4$ (Sleep) & 1.0 & $+10$ \\
 $s_3$ (Study) & study more & $s_3$ (Study) & 1.0 & $-2$ \\
 \bottomrule
@@ -718,7 +718,7 @@ $s_3$ (Study) & study more & $s_3$ (Study) & 1.0 & $-2$ \\
     every edge/.style={->, thick}
   ]
   \node[state] (c)  at (0, 0)    {Class $s_1$};
-  \node[state] (fb) at (-3, -2)  {Рутуб $s_2$};
+  \node[state] (fb) at (-3, -2)  {Rutube $s_2$};
   \node[state] (st) at (3, -2)   {Study $s_3$};
   \node[state, double] (sl) at (3, -4.5) {Sleep $s_4$};
 
@@ -750,7 +750,7 @@ At $s_1$:
 Q_*(s_1, \text{attend})   &= -2 + 0.9 \times 10 = 7.0, \\
 Q_*(s_1, \text{distract}) &= -1 + 0.9 \times V_*(s_2).
 \end{align*}
-For $V_*(s_2)$ we note that from Рутуб the optimal action is \emph{quit} (returning to Class, which has value $7.0$), so:
+For $V_*(s_2)$ we note that from Rutube the optimal action is \emph{quit} (returning to Class, which has value $7.0$), so:
 \[
 V_*(s_2) = -1 + 0.9 \times 7.0 = -1 + 6.3 = 5.3.
 \]

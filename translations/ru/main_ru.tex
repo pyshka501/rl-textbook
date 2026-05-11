@@ -5,7 +5,7 @@
 % ============================================================
 \title{Обучение с подкреплением}
 \newcommand{\booksubtitle}{От бандитов до RLHF}
-\newcommand{\booklicense}{Creative Commons Zero 1.0 Universal}
+\newcommand{\booklicense}{Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International (CC BY-NC-ND 4.0)}
 
 \author{На основе лекций К.\,К.~Пчелина}
 \newcommand{\authorsubtitle}{Москва, Россия}
@@ -22,13 +22,39 @@
 \usepackage[T2A]{fontenc}          % T2A for Cyrillic
 \usepackage{fix-cm}
 \usepackage{lmodern}
+\usepackage{anyfontsize}           % allow arbitrary font sizes (fixes title page warnings)
 \usepackage[english,russian]{babel} % Russian as main, English for math terms
 
-% Page geometry
-\usepackage[bindingoffset=0in,
-            left=0.75in, right=0.75in,
-            top=.8125in, bottom=.9375in,
-            paperwidth=7in, paperheight=10in]{geometry}
+% Silence harmless T2A font shape warnings.
+% Latin Modern's T2A coverage lacks `sl` (slanted) and a few other shapes;
+% manually substitute lm* families to the corresponding cm-super families
+% (which have full T2A coverage). Pure warning suppression — visually identical.
+\DeclareFontFamily{T2A}{lmr}{}
+\DeclareFontShape{T2A}{lmr}{m}{n}{<->ssub*cmr/m/n}{}
+\DeclareFontShape{T2A}{lmr}{m}{it}{<->ssub*cmr/m/it}{}
+\DeclareFontShape{T2A}{lmr}{m}{sl}{<->ssub*cmr/m/sl}{}
+\DeclareFontShape{T2A}{lmr}{m}{sc}{<->ssub*cmr/m/sc}{}
+\DeclareFontShape{T2A}{lmr}{m}{scit}{<->ssub*cmr/m/it}{}
+\DeclareFontShape{T2A}{lmr}{bx}{n}{<->ssub*cmr/bx/n}{}
+\DeclareFontShape{T2A}{lmr}{bx}{it}{<->ssub*cmr/bx/it}{}
+\DeclareFontShape{T2A}{lmr}{bx}{sl}{<->ssub*cmr/bx/sl}{}
+\DeclareFontShape{T2A}{lmr}{bx}{sc}{<->ssub*cmr/bx/sc}{}
+\DeclareFontFamily{T2A}{lmss}{}
+\DeclareFontShape{T2A}{lmss}{m}{n}{<->ssub*cmss/m/n}{}
+\DeclareFontShape{T2A}{lmss}{m}{it}{<->ssub*cmss/m/it}{}
+\DeclareFontShape{T2A}{lmss}{m}{sl}{<->ssub*cmss/m/sl}{}
+\DeclareFontShape{T2A}{lmss}{bx}{n}{<->ssub*cmss/bx/n}{}
+\DeclareFontShape{T2A}{lmss}{bx}{it}{<->ssub*cmss/bx/it}{}
+\DeclareFontFamily{T2A}{lmtt}{}
+\DeclareFontShape{T2A}{lmtt}{m}{n}{<->ssub*cmtt/m/n}{}
+\DeclareFontShape{T2A}{lmtt}{m}{it}{<->ssub*cmtt/m/it}{}
+\DeclareFontShape{T2A}{lmtt}{m}{sl}{<->ssub*cmtt/m/sl}{}
+
+% Page geometry — A4 (matches the cover design)
+\usepackage[a4paper,
+            left=20mm, right=20mm,
+            top=22mm, bottom=22mm,
+            bindingoffset=0mm]{geometry}
 
 % Mathematics
 \usepackage{amsmath}
@@ -43,7 +69,8 @@
 \usepackage{graphicx}
 \usepackage{float}
 \usepackage{subcaption}
-\usetikzlibrary{positioning,arrows,arrows.meta,shapes.geometric,calc,fit,decorations.pathreplacing,patterns}
+\usepackage{eso-pic}        % full-bleed background image (cover)
+\usetikzlibrary{positioning,arrows,arrows.meta,shapes.geometric,calc,fit,decorations.pathreplacing,patterns,fadings}
 
 % Tables
 \usepackage{booktabs}
@@ -83,7 +110,7 @@
 \usepackage{pifont}
 \newcommand{\xmark}{\ding{55}}
 \newcommand{\cmark}{\ding{51}}
-\emergencystretch=1.5em
+\emergencystretch=3em       % allow more stretch to avoid overfull hboxes in Russian
 
 % ============================================================
 %  THEOREM ENVIRONMENTS (Russian names)
@@ -144,39 +171,78 @@
 \begin{document}
 \frontmatter
 
-% ---- Title Page ----
-\newgeometry{top=1.75in,bottom=.5in}
+% ---- Title Page (full-bleed cover) ----
 \begin{titlepage}
-\begin{flushleft}
+  % 1. Full-bleed background photo + dark scrim (both in BG so text stays on top)
+  \AddToShipoutPictureBG*{%
+    \AtPageLowerLeft{%
+      \includegraphics[width=\paperwidth,height=\paperheight,%
+                       keepaspectratio=false]{cover.jpg}}%
+    \AtPageLowerLeft{%
+      \begin{tikzpicture}[remember picture,overlay]
+        \fill[black, opacity=0.90, path fading=north]
+          (0,0) rectangle (\paperwidth, .55\paperheight);
+      \end{tikzpicture}}}
 
-\textbf{\fontsize{44}{50}\selectfont Обучение с\\подкреплением\\}
+  % 3. Foreground content
+  \newgeometry{left=22mm, right=22mm, top=22mm, bottom=22mm}
+  \color{white}
+  \sffamily
+  \begin{flushleft}
 
-\par\noindent\rule{\textwidth}{4pt}\\
+    % Top mark with logo
+    \noindent
+    \raisebox{-.32\height}{%
+      \includegraphics[height=9mm]{logo.jpg}}\hspace{3mm}%
+    {\fontsize{8.5pt}{10pt}\selectfont
+     \textbf{\textls[220]{MOUNTAIN AI \, \textbullet\, ТОМ I}}\par}
 
-\begin{tikzpicture}
-\shade[bottom color=lightgray,top color=white]
-    (0,0) rectangle (\textwidth, 1.5)
-    node[midway] {\textbf{\large \textit{\booksubtitle}}};
-\end{tikzpicture}
+    \vspace*{\fill}
 
-\begin{flushright}
-\Large Первое издание
-\end{flushright}
+    % Eyebrow
+    {\fontsize{9pt}{12pt}\selectfont
+     \textls[240]{ЛЕКЦИИ ПО МАШИННОМУ ОБУЧЕНИЮ}\par}
+    \vspace{8pt}
 
-\vspace{\fill}
+    % Title — serif italic accent on the second word
+    {\rmfamily
+     \fontsize{48pt}{50pt}\selectfont
+     \textbf{Обучение с\\\textit{подкреплением}}\par}
 
-\textbf{\large \bookauthor}\\[3.5pt]
-\textbf{\large \textit{\authorsubtitle}}
+    \vspace{10pt}
+    \noindent\textcolor{white}{\rule{32mm}{1.2pt}}\par
+    \vspace{10pt}
 
-\vspace{\fill}
+    % Subtitle
+    {\rmfamily\itshape\fontsize{20pt}{24pt}\selectfont
+     От бандитов до RLHF\par}
 
-\begin{center}
-\includegraphics{../../book/booksvg.pdf}
-\end{center}
+    \vspace{14mm}
 
-\end{flushleft}
+    % Author block + edition
+    \noindent\begin{minipage}[b]{.7\linewidth}
+      {\fontsize{9pt}{12pt}\selectfont
+       \textbf{\textls[180]{К.\,К.\,ПЧЕЛИН}}\par}
+      \vspace{2pt}
+      {\fontsize{8pt}{11pt}\selectfont
+       \textls[80]{На основе лекций \,\textbullet\, Москва, \the\year}\par}
+      \vspace{6pt}
+      {\fontsize{8pt}{11pt}\selectfont
+       \textls[80]{github.com/pyshka501/rl-textbook \,\textbullet\, t.me/mountainai\_info}\par}
+    \end{minipage}%
+    \hfill
+    \begin{minipage}[b]{.25\linewidth}\raggedleft
+      {\fontsize{8.5pt}{11pt}\selectfont
+       \textls[220]{ПЕРВОЕ\\ИЗДАНИЕ}\par}
+    \end{minipage}
+
+  \end{flushleft}
+  \restoregeometry
 \end{titlepage}
-\restoregeometry
+
+% Restore default colour and family for subsequent pages
+\color{black}
+\rmfamily
 
 % Colophon
 \thispagestyle{empty}
@@ -185,7 +251,9 @@
 Книга свёрстана с помощью \LaTeX{}.\\
 \vspace{\fill}
 Copyright \textcopyright{} \the\year{}  \bookauthor\\
-Лицензия: \booklicense
+Лицензия: \booklicense\\
+\vspace{0.5em}
+Печать на продажу, коммерческое издание и производные произведения этой лицензией не разрешены. Для таких целей требуется письменное разрешение автора.
 \end{flushleft}
 
 \addtocounter{page}{2}
@@ -226,7 +294,7 @@ Copyright \textcopyright{} \the\year{}  \bookauthor\\
 \include{chapters/ch14_ru}
 
 % --- Часть IV: Передний край ---
-\part{Передний край}
+\part{Фронтир}
 \include{chapters/ch15_ru}
 \include{chapters/ch16_ru}
 \include{chapters/ch17_ru}
@@ -244,5 +312,86 @@ Copyright \textcopyright{} \the\year{}  \bookauthor\\
 % Index
 \addcontentsline{toc}{chapter}{Предметный указатель}
 \printindex
+
+% =============================================================
+% Back cover
+% =============================================================
+\cleardoublepage
+\thispagestyle{empty}
+\begin{titlepage}
+  % Background photo + uniform dark scrim (whole page, since text covers it)
+  \AddToShipoutPictureBG*{%
+    \AtPageLowerLeft{%
+      \includegraphics[width=\paperwidth,height=\paperheight,%
+                       keepaspectratio=false]{cover.jpg}}%
+    \AtPageLowerLeft{%
+      \begin{tikzpicture}[remember picture,overlay]
+        \fill[black, opacity=0.78]
+          (0,0) rectangle (\paperwidth, \paperheight);
+      \end{tikzpicture}}}
+
+  \newgeometry{left=22mm, right=22mm, top=24mm, bottom=22mm}
+  \color{white}
+  \sffamily
+  \begin{flushleft}
+
+    % Top mark with logo
+    \noindent
+    \raisebox{-.32\height}{%
+      \includegraphics[height=9mm]{logo.jpg}}\hspace{3mm}%
+    {\fontsize{8.5pt}{10pt}\selectfont
+     \textbf{\textls[220]{MOUNTAIN AI \, \textbullet\, ТОМ I}}\par}
+
+    \vspace{18mm}
+
+    % "Об этой книге"
+    {\fontsize{9pt}{12pt}\selectfont
+     \textls[240]{ОБ ЭТОЙ КНИГЕ}\par}
+    \vspace{10pt}
+
+    % Pull quote / blurb
+    {\rmfamily\itshape\fontsize{17pt}{23pt}\selectfont
+     Учебник, охватывающий обучение с подкреплением от первых принципов до современных методов выравнивания языковых моделей.\par}
+
+    \vspace{10mm}
+    \noindent\textcolor{white}{\rule{32mm}{1pt}}\par
+    \vspace{10mm}
+
+    % Description
+    {\fontsize{11pt}{16pt}\selectfont
+     Книга предназначена для аспирантов, ML-инженеров и исследователей, ищущих единое изложение классической теории RL и современных техник постобучения после крупных языковых моделей.\par}
+
+    \vspace{10mm}
+
+    % Contents header
+    {\fontsize{9pt}{12pt}\selectfont
+     \textls[240]{В КНИГЕ РАЗОБРАНЫ}\par}
+    \vspace{8pt}
+
+    {\fontsize{10.5pt}{17pt}\selectfont
+     \noindent\textbullet\ Многорукие бандиты, MDP, уравнения Беллмана\\
+     \textbullet\ Динамическое программирование, Монте-Карло, TD-обучение\\
+     \textbullet\ Глубокий RL: DQN, REINFORCE, A2C, PPO, GAE\\
+     \textbullet\ Постобучение языковых моделей: SFT, RLHF, DPO, GRPO\\
+     \textbullet\ Мульти-агентные системы и фронтиры исследований\par}
+
+    \vspace*{\fill}
+
+    % Author + contact
+    \noindent
+    {\fontsize{8.5pt}{11pt}\selectfont
+     \textbf{\textls[180]{К.\,К.\,ПЧЕЛИН}}\par}
+    \vspace{2pt}
+    {\fontsize{8pt}{11pt}\selectfont
+     \textls[80]{Лекции по машинному обучению \,\textbullet\, Москва, \the\year}\par}
+    \vspace{6pt}
+    {\fontsize{8pt}{11pt}\selectfont
+     \textls[80]{github.com/pyshka501/rl-textbook \,\textbullet\, t.me/mountainai\_info}\par}
+
+  \end{flushleft}
+  \restoregeometry
+\end{titlepage}
+
+\color{black}\rmfamily
 
 \end{document}

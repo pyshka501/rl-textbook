@@ -43,3 +43,7 @@ Thank you for considering contributing to this project! Here's how you can help.
 ## Code of Conduct
 
 Be respectful. We welcome contributors of all backgrounds and experience levels.
+
+## License of Contributions
+
+By submitting a pull request, patch, translation, or any other contribution, you agree that your contribution is licensed under the same terms as the rest of the project: **CC BY-NC-ND 4.0** (see [LICENSE](LICENSE)). Printing for sale, commercial publishing, and derivative works require prior written permission from the author.

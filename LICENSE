@@ -1,21 +1,66 @@
-MIT License
+Reinforcement Learning: From Bandits to LLM Alignment
+Copyright (c) 2026 The Authors
 
-Copyright (c) 2026 Authors
+This work — including the book text (book/, translations/), notebooks
+(notebooks/, translations/<lang>/notebooks/), exercises (exercises/), and all
+accompanying source files — is licensed under the
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+    Creative Commons Attribution-NonCommercial-NoDerivatives 4.0
+    International Public License (CC BY-NC-ND 4.0).
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+You may freely:
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+  * SHARE  — copy and redistribute the material in any medium or format
+
+under the following terms:
+
+  * ATTRIBUTION       — You must give appropriate credit, provide a link to
+                        the license, and indicate if changes were made.
+  * NONCOMMERCIAL     — You may not use the material for commercial purposes,
+                        including (but not limited to) printing copies for
+                        sale, paid courses built on this material, or
+                        bundling it into commercial products.
+  * NODERIVATIVES     — If you remix, transform, or build upon the material,
+                        you may not distribute the modified material.
+
+No additional restrictions — You may not apply legal terms or technological
+measures that legally restrict others from doing anything the license
+permits.
+
+Notices:
+  * You do not have to comply with the license for elements of the material
+    in the public domain or where your use is permitted by an applicable
+    exception or limitation.
+  * No warranties are given. The license may not give you all of the
+    permissions necessary for your intended use. For example, other rights
+    such as publicity, privacy, or moral rights may limit how you use the
+    material.
+
+Full legal code:
+    https://creativecommons.org/licenses/by-nc-nd/4.0/legalcode
+Human-readable summary:
+    https://creativecommons.org/licenses/by-nc-nd/4.0/
+
+================================================================================
+PRINTING, COMMERCIAL PUBLISHING, AND DERIVATIVE WORKS
+================================================================================
+
+Printing this work for sale, publishing it commercially (in print or
+electronic form), bundling it into paid products or courses, or producing
+derivative editions (revisions, adaptations, new editions, audiobooks,
+translated commercial editions, etc.) is NOT permitted under this license.
+
+For any such use, written permission from the copyright holder is required.
+Please contact the author to discuss licensing terms before any such use.
+
+Translations published online for free, non-commercial reading are welcomed
+and fall within the spirit of this license, provided they preserve
+attribution and the original license notice.
+
+================================================================================
+NOTE ON CONTRIBUTIONS
+================================================================================
+
+By submitting a contribution (pull request, patch, translation, etc.) to
+this repository, you agree that your contribution will be made available
+under the same CC BY-NC-ND 4.0 license.

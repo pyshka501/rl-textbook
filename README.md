@@ -104,7 +104,7 @@ rl-textbook/
 ├── exercises/              # Exercises with full solutions
 │   └── ch01–ch17 _solutions.md
 ├── translations/           # Translations (ru, zh, es, de, fr, ja, ko)
-├── LICENSE                 # MIT License
+├── LICENSE                 # CC BY-NC-ND 4.0
 ├── CONTRIBUTING.md         # Contribution guidelines
 └── README.md               # This file
 ```
@@ -129,4 +129,6 @@ We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-This project is licensed under the MIT License — see [LICENSE](LICENSE).
+This project is licensed under **Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International (CC BY-NC-ND 4.0)** — see [LICENSE](LICENSE).
+
+You are free to read, share, and link to this work for non-commercial purposes with attribution. **Printing for sale, commercial publishing, and derivative works require prior written permission from the author.** Open an issue or contact the author to request permission.

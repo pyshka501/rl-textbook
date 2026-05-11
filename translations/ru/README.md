@@ -1,6 +1,6 @@
 # Russian (Русский) Translation
 
-Status: **Planned**
+Status: **Done**
 
 This directory will contain the Russian (Русский) translation of the textbook.
 
@@ -14,22 +14,22 @@ This directory will contain the Russian (Русский) translation of the text
 
 | Chapter | Status |
 |---------|--------|
-| Ch 01 | Not started |
-| Ch 02 | Not started |
-| Ch 03 | Not started |
-| Ch 04 | Not started |
-| Ch 05 | Not started |
-| Ch 06 | Not started |
-| Ch 07 | Not started |
-| Ch 08 | Not started |
-| Ch 09 | Not started |
-| Ch 10 | Not started |
-| Ch 11 | Not started |
-| Ch 12 | Not started |
-| Ch 13 | Not started |
-| Ch 14 | Not started |
-| Ch 15 | Not started |
-| Ch 16 | Not started |
-| Ch 17 | Not started |
+| Ch 01 | Done |
+| Ch 02 | Done |
+| Ch 03 | Done |
+| Ch 04 | Done |
+| Ch 05 | Done |
+| Ch 06 | Done |
+| Ch 07 | Done |
+| Ch 08 | Done |
+| Ch 09 | Done |
+| Ch 10 | Done |
+| Ch 11 | Done |
+| Ch 12 | Done |
+| Ch 13 | Done |
+| Ch 14 | Done |
+| Ch 15 | Done |
+| Ch 16 | Done |
+| Ch 17 | Done |
 
-Looking for a maintainer! Open an issue if you'd like to help.
+Maintainer: @pyshka501

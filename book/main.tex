@@ -5,7 +5,7 @@
 % ============================================================
 \title{Reinforcement Learning}
 \newcommand{\booksubtitle}{From Bandits to RLHF}
-\newcommand{\booklicense}{Creative Commons Zero 1.0 Universal}
+\newcommand{\booklicense}{Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International (CC BY-NC-ND 4.0)}
 
 \author{Based on lectures by K.\,K.~Pchelin}
 \newcommand{\authorsubtitle}{Moscow, Russia}
@@ -23,11 +23,11 @@
 \usepackage{fix-cm}
 \usepackage{lmodern}
 
-% Page geometry — wider text block, no binding offset for PDF
-\usepackage[bindingoffset=0in,
-            left=0.75in, right=0.75in,
-            top=.8125in, bottom=.9375in,
-            paperwidth=7in, paperheight=10in]{geometry}
+% Page geometry — A4 (matches the cover design)
+\usepackage[a4paper,
+            left=20mm, right=20mm,
+            top=22mm, bottom=22mm,
+            bindingoffset=0mm]{geometry}
 
 % Mathematics
 \usepackage{amsmath}
@@ -42,7 +42,8 @@
 \usepackage{graphicx}
 \usepackage{float}
 \usepackage{subcaption}
-\usetikzlibrary{positioning,arrows,arrows.meta,shapes.geometric,calc,fit,decorations.pathreplacing,patterns}
+\usepackage{eso-pic}        % full-bleed background image (cover)
+\usetikzlibrary{positioning,arrows,arrows.meta,shapes.geometric,calc,fit,decorations.pathreplacing,patterns,fadings}
 
 % Tables
 \usepackage{booktabs}
@@ -77,7 +78,9 @@
 \usepackage{pifont}          % for \ding symbols
 \newcommand{\xmark}{\ding{55}}  % cross mark
 \newcommand{\cmark}{\ding{51}}  % check mark
-\emergencystretch=1.5em      % allow slight stretching to avoid overfull hboxes
+\emergencystretch=3em        % allow stretch to avoid overfull hboxes
+% silence missing T1+lmr scit shape (small caps italic) — defer to after lmodern fully loads
+\AtBeginDocument{\DeclareFontShape{T1}{lmr}{m}{scit}{<->ssub*lmr/m/it}{}}
 
 % ============================================================
 %  THEOREM ENVIRONMENTS
@@ -141,39 +144,78 @@
 \begin{document}
 \frontmatter
 
-% ---- Title Page ----
-\newgeometry{top=1.75in,bottom=.5in}
+% ---- Title Page (full-bleed cover) ----
 \begin{titlepage}
-\begin{flushleft}
+  % 1. Full-bleed background photo + dark scrim (both in BG so text stays on top)
+  \AddToShipoutPictureBG*{%
+    \AtPageLowerLeft{%
+      \includegraphics[width=\paperwidth,height=\paperheight,%
+                       keepaspectratio=false]{cover.jpg}}%
+    \AtPageLowerLeft{%
+      \begin{tikzpicture}[remember picture,overlay]
+        \fill[black, opacity=0.90, path fading=north]
+          (0,0) rectangle (\paperwidth, .55\paperheight);
+      \end{tikzpicture}}}
 
-\textbf{\fontfamily{qcs}\fontsize{48}{54}\selectfont Reinforcement\\Learning\\}
+  % 3. Foreground content
+  \newgeometry{left=22mm, right=22mm, top=22mm, bottom=22mm}
+  \color{white}
+  \sffamily
+  \begin{flushleft}
 
-\par\noindent\rule{\textwidth}{4pt}\\
+    % Top mark with logo
+    \noindent
+    \raisebox{-.32\height}{%
+      \includegraphics[height=9mm]{logo.jpg}}\hspace{3mm}%
+    {\fontsize{8.5pt}{10pt}\selectfont
+     \textbf{\textls[220]{MOUNTAIN AI \, \textbullet\, VOL.\,I}}\par}
 
-\begin{tikzpicture}
-\shade[bottom color=lightgray,top color=white]
-    (0,0) rectangle (\textwidth, 1.5)
-    node[midway] {\textbf{\large \textit{\booksubtitle}}};
-\end{tikzpicture}
+    \vspace*{\fill}
 
-\begin{flushright}
-\Large First Edition
-\end{flushright}
+    % Eyebrow
+    {\fontsize{9pt}{12pt}\selectfont
+     \textls[240]{A COURSE IN MACHINE LEARNING}\par}
+    \vspace{8pt}
 
-\vspace{\fill}
+    % Title — serif italic accent on the second word
+    {\rmfamily
+     \fontsize{48pt}{50pt}\selectfont
+     \textbf{Reinforcement\\\textit{Learning}}\par}
 
-\textbf{\large \bookauthor}\\[3.5pt]
-\textbf{\large \textit{\authorsubtitle}}
+    \vspace{10pt}
+    \noindent\textcolor{white}{\rule{32mm}{1.2pt}}\par
+    \vspace{10pt}
 
-\vspace{\fill}
+    % Subtitle
+    {\rmfamily\itshape\fontsize{20pt}{24pt}\selectfont
+     From Bandits to RLHF\par}
 
-\begin{center}
-\includegraphics{booksvg.pdf}
-\end{center}
+    \vspace{14mm}
 
-\end{flushleft}
+    % Author block + edition
+    \noindent\begin{minipage}[b]{.7\linewidth}
+      {\fontsize{9pt}{12pt}\selectfont
+       \textbf{\textls[180]{K.\,K.\,PCHELIN}}\par}
+      \vspace{2pt}
+      {\fontsize{8pt}{11pt}\selectfont
+       \textls[80]{Based on lectures \,\textbullet\, Moscow, \the\year}\par}
+      \vspace{6pt}
+      {\fontsize{8pt}{11pt}\selectfont
+       \textls[80]{github.com/pyshka501/rl-textbook \,\textbullet\, t.me/mountainai\_info}\par}
+    \end{minipage}%
+    \hfill
+    \begin{minipage}[b]{.25\linewidth}\raggedleft
+      {\fontsize{8.5pt}{11pt}\selectfont
+       \textls[220]{FIRST\\EDITION}\par}
+    \end{minipage}
+
+  \end{flushleft}
+  \restoregeometry
 \end{titlepage}
-\restoregeometry
+
+% Restore default colour and family for subsequent pages
+\color{black}
+\rmfamily
 
 % Colophon
 \thispagestyle{empty}
@@ -182,7 +224,9 @@
 This book was typeset using \LaTeX{} software.\\
 \vspace{\fill}
 Copyright \textcopyright{} \the\year{}  \bookauthor\\
-License: \booklicense
+License: \booklicense\\
+\vspace{0.5em}
+Printing for sale, commercial publishing, and derivative works are not permitted under this license. For such uses, please contact the author for written permission.
 \end{flushleft}
 
 \addtocounter{page}{2}
@@ -245,5 +289,86 @@ License: \booklicense
 % Index
 \addcontentsline{toc}{chapter}{Index}
 \printindex
+
+% =============================================================
+% Back cover
+% =============================================================
+\cleardoublepage
+\thispagestyle{empty}
+\begin{titlepage}
+  % Background photo + uniform dark scrim (whole page, since text covers it)
+  \AddToShipoutPictureBG*{%
+    \AtPageLowerLeft{%
+      \includegraphics[width=\paperwidth,height=\paperheight,%
+                       keepaspectratio=false]{cover.jpg}}%
+    \AtPageLowerLeft{%
+      \begin{tikzpicture}[remember picture,overlay]
+        \fill[black, opacity=0.78]
+          (0,0) rectangle (\paperwidth, \paperheight);
+      \end{tikzpicture}}}
+
+  \newgeometry{left=22mm, right=22mm, top=24mm, bottom=22mm}
+  \color{white}
+  \sffamily
+  \begin{flushleft}
+
+    % Top mark with logo
+    \noindent
+    \raisebox{-.32\height}{%
+      \includegraphics[height=9mm]{logo.jpg}}\hspace{3mm}%
+    {\fontsize{8.5pt}{10pt}\selectfont
+     \textbf{\textls[220]{MOUNTAIN AI \, \textbullet\, VOL.\,I}}\par}
+
+    \vspace{18mm}
+
+    % "About this book"
+    {\fontsize{9pt}{12pt}\selectfont
+     \textls[240]{ABOUT THIS BOOK}\par}
+    \vspace{10pt}
+
+    % Pull quote / blurb
+    {\rmfamily\itshape\fontsize{17pt}{23pt}\selectfont
+     A textbook covering reinforcement learning from first principles to modern language model alignment methods.\par}
+
+    \vspace{10mm}
+    \noindent\textcolor{white}{\rule{32mm}{1pt}}\par
+    \vspace{10mm}
+
+    % Description
+    {\fontsize{11pt}{16pt}\selectfont
+     Designed for graduate students, ML engineers, and researchers seeking a unified treatment of classical RL theory and modern post-training techniques for large language models.\par}
+
+    \vspace{10mm}
+
+    % Contents header
+    {\fontsize{9pt}{12pt}\selectfont
+     \textls[240]{INSIDE THE BOOK}\par}
+    \vspace{8pt}
+
+    {\fontsize{10.5pt}{17pt}\selectfont
+     \noindent\textbullet\ Multi-armed bandits, MDPs, Bellman equations\\
+     \textbullet\ Dynamic programming, Monte Carlo, TD learning\\
+     \textbullet\ Deep RL: DQN, REINFORCE, A2C, PPO, GAE\\
+     \textbullet\ LM post-training: SFT, RLHF, DPO, GRPO\\
+     \textbullet\ Multi-agent systems and research frontiers\par}
+
+    \vspace*{\fill}
+
+    % Author + contact
+    \noindent
+    {\fontsize{8.5pt}{11pt}\selectfont
+     \textbf{\textls[180]{K.\,K.\,PCHELIN}}\par}
+    \vspace{2pt}
+    {\fontsize{8pt}{11pt}\selectfont
+     \textls[80]{A course in machine learning \,\textbullet\, Moscow, \the\year}\par}
+    \vspace{6pt}
+    {\fontsize{8pt}{11pt}\selectfont
+     \textls[80]{github.com/pyshka501/rl-textbook \,\textbullet\, t.me/mountainai\_info}\par}
+
+  \end{flushleft}
+  \restoregeometry
+\end{titlepage}
+
+\color{black}\rmfamily
 
 \end{document}
